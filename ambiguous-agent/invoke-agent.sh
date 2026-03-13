@@ -60,7 +60,7 @@ PRESET_codex_EXEC_ARGS="--full-auto"
 
 usage() {
     cat >&2 <<EOF
-Usage: $(basename "$0") [-e|-p] [-a <agent>] <prompt...>
+Usage: $(basename "$0") [-e|-p] [-a <agent>] [-s] <prompt...>
 
 Modes:
   -p  Prompt mode: ask questions, read-only context
@@ -68,6 +68,7 @@ Modes:
 
 Options:
   -a <agent>  Select agent preset (default: $DEFAULT_PRESET)
+  -s          Session context: indicates invocation is from a parent session
 
 Available presets:
   copilot   GitHub Copilot CLI
@@ -79,6 +80,7 @@ Available presets:
 Environment:
   AGENT_RECORDS_PATH  Directory for records storage (default: $RECORDS_PATH)
   AGENT_PRESET        Default agent preset (overrides built-in default)
+  AGENT_QUIET_CONTEXT Set to 1 to use minimal context prefix (path only)
 
 EOF
     exit 1
@@ -190,10 +192,20 @@ build_agent_command() {
         fi
     fi
 
-    # Build the prompt with records path context prepended
-    local prompt_with_context="[Agent records directory: ${records_path}]
+    # Build the prompt - optionally append records path context
+    # Note: Context is appended (not prepended) so the actual task is seen first
+    local prompt_with_context
+    if [[ "${AGENT_QUIET_CONTEXT:-}" == "1" ]]; then
+        # Quiet mode: just include the path hint
+        prompt_with_context="$*
 
-$*"
+(Records: ${records_path%/})"
+    else
+        # Default: include context explaining continuity, appended after the main prompt
+        prompt_with_context="$*
+
+[Previous invocation records available at: ${records_path%/}]"
+    fi
 
     args+=("$prompt_flag" "$prompt_with_context")
 
@@ -207,6 +219,7 @@ $*"
 
 PRESET="${AGENT_PRESET:-$DEFAULT_PRESET}"
 MODE=""
+SESSION_CONTEXT="false"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -218,6 +231,10 @@ while [[ $# -gt 0 ]]; do
             [[ $# -lt 2 ]] && usage
             PRESET="$2"
             shift 2
+            ;;
+        -s|--session)
+            SESSION_CONTEXT="true"
+            shift
             ;;
         -h|--help)
             usage
@@ -240,7 +257,7 @@ mkdir -p "$RECORDS_PATH"
 
 GROUP_ID=$(find_recent_group_id "$RECORDS_PATH" "$NOW_UNIX")
 
-INVOCATION_DIR="${RECORDS_PATH}/${NOW_DIR}_${NOW_UNIX}"
+INVOCATION_DIR="${RECORDS_PATH%/}/${NOW_DIR}_${NOW_UNIX}"
 mkdir -p "$INVOCATION_DIR"
 
 gather_git_info "$CALL_PWD"
@@ -265,6 +282,7 @@ cat > "$INVOCATION_DIR/metadata.txt" <<EOF
 Date/Time:  $NOW_HUMAN
 Agent:      $PRESET ($AGENT_CMD)
 Mode:       $MODE
+Session:    $SESSION_CONTEXT
 Prompt:     $*
 PWD:        $CALL_PWD
 Git Repo:   $GIT_REPO

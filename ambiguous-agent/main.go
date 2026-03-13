@@ -212,8 +212,26 @@ func runAgent(prompt string, sessionDir string, logFile *os.File) int {
 		return 1
 	}
 
-	// Run in execute mode with the prompt
-	cmd := exec.Command(invokeScript, "-e", prompt)
+	// Parse the prompt into arguments, respecting quoted strings
+	args := parseArgs(prompt)
+
+	// Determine mode: default to -e (execute), but allow -p (prompt-only)
+	mode := "-e"
+	var promptArgs []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-p" {
+			mode = "-p"
+		} else if args[i] == "-e" {
+			mode = "-e"
+		} else {
+			promptArgs = append(promptArgs, args[i])
+		}
+	}
+
+	// Build command with invoke-agent.sh and parsed arguments
+	// Include -s flag to indicate this is invoked from a session context
+	cmdArgs := append([]string{mode, "-s"}, promptArgs...)
+	cmd := exec.Command(invokeScript, cmdArgs...)
 	cmd.Env = append(os.Environ(), "AGENT_RECORDS_PATH="+sessionDir)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = io.MultiWriter(os.Stdout, logFile)
@@ -233,6 +251,38 @@ func runAgent(prompt string, sessionDir string, logFile *os.File) int {
 
 	fmt.Println(successStyle.Render("agent completed"))
 	return 0
+}
+
+// parseArgs splits a string into arguments, respecting quoted strings
+func parseArgs(input string) []string {
+	var args []string
+	var current strings.Builder
+	inQuote := false
+	quoteChar := rune(0)
+
+	for _, r := range input {
+		switch {
+		case !inQuote && (r == '"' || r == '\''):
+			inQuote = true
+			quoteChar = r
+		case inQuote && r == quoteChar:
+			inQuote = false
+			quoteChar = 0
+		case !inQuote && r == ' ':
+			if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+
+	return args
 }
 
 func findInvokeScript() string {
