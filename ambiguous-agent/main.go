@@ -16,6 +16,10 @@ import (
 )
 
 const defaultRecordsPath = "/workspaces/agent-records/"
+const defaultAgent = "claude"
+
+// Available agent presets (must match invoke-agent.sh presets)
+var availableAgents = []string{"copilot", "gemini", "claude", "opencode", "codex"}
 
 var (
 	// Styles - subtle decoration
@@ -35,6 +39,10 @@ var (
 
 	errorStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196"))
+
+	agentStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("141")).
+			Bold(true)
 )
 
 // CommandRecord holds metadata for each command
@@ -50,6 +58,12 @@ func main() {
 	recordsPath := os.Getenv("AGENT_RECORDS_PATH")
 	if recordsPath == "" {
 		recordsPath = defaultRecordsPath
+	}
+
+	// Initialize current agent from environment or use default
+	currentAgent := os.Getenv("AGENT_PRESET")
+	if currentAgent == "" {
+		currentAgent = defaultAgent
 	}
 
 	now := time.Now()
@@ -72,6 +86,7 @@ func main() {
 	defer logFile.Close()
 
 	fmt.Println(sessionStyle.Render(fmt.Sprintf("● session: %s", sessionDir)))
+	fmt.Println(sessionStyle.Render(fmt.Sprintf("  agent: %s | 'set-agent <name>' to change | 'list-agents' for options", currentAgent)))
 	fmt.Println(sessionStyle.Render("  type 'exit!' to end | 'agent <prompt>' to invoke AI"))
 	fmt.Println()
 
@@ -79,7 +94,7 @@ func main() {
 	cwd, _ := os.Getwd()
 
 	rl, err := readline.NewEx(&readline.Config{
-		Prompt:          buildPrompt(cwd),
+		Prompt:          buildPrompt(cwd, currentAgent),
 		HistoryFile:     readlineRecords,
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
@@ -123,11 +138,36 @@ func main() {
 		}
 		lastCommandTime = commandTime
 
-		// Handle 'agent' command specially
+		// Handle special commands
 		var exitCode int
-		if strings.HasPrefix(line, "agent ") {
+		if strings.HasPrefix(line, "set-agent ") {
+			newAgent := strings.TrimSpace(strings.TrimPrefix(line, "set-agent "))
+			if isValidAgent(newAgent) {
+				currentAgent = newAgent
+				rl.SetPrompt(buildPrompt(cwd, currentAgent))
+				fmt.Println(successStyle.Render(fmt.Sprintf("agent set to: %s", currentAgent)))
+			} else {
+				fmt.Println(errorStyle.Render(fmt.Sprintf("unknown agent: %s", newAgent)))
+				fmt.Println(sessionStyle.Render(fmt.Sprintf("available: %s", strings.Join(availableAgents, ", "))))
+			}
+			continue
+		} else if line == "set-agent" {
+			fmt.Println(errorStyle.Render("usage: set-agent <name>"))
+			fmt.Println(sessionStyle.Render(fmt.Sprintf("available: %s", strings.Join(availableAgents, ", "))))
+			continue
+		} else if line == "list-agents" {
+			fmt.Println(sessionStyle.Render("available agents:"))
+			for _, a := range availableAgents {
+				if a == currentAgent {
+					fmt.Println(agentStyle.Render(fmt.Sprintf("  → %s (selected)", a)))
+				} else {
+					fmt.Println(sessionStyle.Render(fmt.Sprintf("    %s", a)))
+				}
+			}
+			continue
+		} else if strings.HasPrefix(line, "agent ") {
 			prompt := strings.TrimPrefix(line, "agent ")
-			exitCode = runAgent(prompt, sessionDir, logFile)
+			exitCode = runAgent(prompt, currentAgent, sessionDir, logFile)
 		} else if line == "agent" {
 			fmt.Println(errorStyle.Render("usage: agent <prompt>"))
 			continue
@@ -149,17 +189,27 @@ func main() {
 		newCwd, _ := os.Getwd()
 		if newCwd != cwd {
 			cwd = newCwd
-			rl.SetPrompt(buildPrompt(cwd))
+			rl.SetPrompt(buildPrompt(cwd, currentAgent))
 		}
 	}
 }
 
-func buildPrompt(cwd string) string {
+// isValidAgent checks if the agent name is in the available agents list
+func isValidAgent(name string) bool {
+	for _, a := range availableAgents {
+		if a == name {
+			return true
+		}
+	}
+	return false
+}
+
+func buildPrompt(cwd string, agent string) string {
 	dir := filepath.Base(cwd)
 	if dir == "/" {
 		dir = "/"
 	}
-	return promptStyle.Render(dir) + " › "
+	return agentStyle.Render("["+agent+"]") + " " + promptStyle.Render(dir) + " › "
 }
 
 func runCommand(cmdLine string, logFile *os.File) int {
@@ -204,7 +254,7 @@ func runCommand(cmdLine string, logFile *os.File) int {
 	return 0
 }
 
-func runAgent(prompt string, sessionDir string, logFile *os.File) int {
+func runAgent(prompt string, agent string, sessionDir string, logFile *os.File) int {
 	// Find invoke-agent.sh relative to executable or use PATH
 	invokeScript := findInvokeScript()
 	if invokeScript == "" {
@@ -230,14 +280,15 @@ func runAgent(prompt string, sessionDir string, logFile *os.File) int {
 
 	// Build command with invoke-agent.sh and parsed arguments
 	// Include -s flag to indicate this is invoked from a session context
-	cmdArgs := append([]string{mode, "-s"}, promptArgs...)
+	// Include -a flag to specify the agent preset
+	cmdArgs := append([]string{mode, "-s", "-a", agent}, promptArgs...)
 	cmd := exec.Command(invokeScript, cmdArgs...)
-	cmd.Env = append(os.Environ(), "AGENT_RECORDS_PATH="+sessionDir)
+	cmd.Env = append(os.Environ(), "AGENT_RECORDS_PATH="+sessionDir, "AGENT_PRESET="+agent)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = io.MultiWriter(os.Stdout, logFile)
 	cmd.Stderr = io.MultiWriter(os.Stderr, logFile)
 
-	fmt.Println(sessionStyle.Render("invoking agent..."))
+	fmt.Println(sessionStyle.Render(fmt.Sprintf("invoking %s...", agent)))
 
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

@@ -43,10 +43,10 @@ PRESET_claude_ADD_DIR_FLAG="--add-dir"
 PRESET_claude_EXEC_ARGS="--dangerously-skip-permissions"
 
 # OpenCode
-PRESET_opencode_CMD="opencode"
-PRESET_opencode_PROMPT_FLAG="-p"
+PRESET_opencode_CMD="opencode run"
+PRESET_opencode_PROMPT_FLAG=""
 PRESET_opencode_ADD_DIR_FLAG=""
-PRESET_opencode_EXEC_ARGS="--auto-approve"
+PRESET_opencode_EXEC_ARGS=""
 
 # Codex
 PRESET_codex_CMD="codex"
@@ -207,7 +207,11 @@ build_agent_command() {
 [Previous invocation records available at: ${records_path%/}]"
     fi
 
-    args+=("$prompt_flag" "$prompt_with_context")
+    if [[ -n "$prompt_flag" ]]; then
+        args+=("$prompt_flag" "$prompt_with_context")
+    else
+        args+=("$prompt_with_context")
+    fi
 
     echo "$cmd"
     printf '%s\n' "${args[@]}"
@@ -265,13 +269,14 @@ gather_git_info "$CALL_PWD"
 mapfile -t cmd_parts < <(build_agent_command "$PRESET" "$MODE" "$CALL_PWD" "$RECORDS_PATH" "$@")
 [[ ${#cmd_parts[@]} -eq 0 ]] && exit 1
 
-AGENT_CMD="${cmd_parts[0]}"
+# Split the command into words (handles multi-word commands like "opencode run")
+read -ra AGENT_CMD_PARTS <<< "${cmd_parts[0]}"
 AGENT_ARGS=("${cmd_parts[@]:1}")
 
 START_TIME=$(date +%s)
 
 AGENT_EXIT=0
-"$AGENT_CMD" "${AGENT_ARGS[@]}" 2>&1 | tee "$INVOCATION_DIR/raw_output.txt"
+"${AGENT_CMD_PARTS[@]}" "${AGENT_ARGS[@]}" 2>&1 | tee "$INVOCATION_DIR/raw_output.txt"
 AGENT_EXIT="${PIPESTATUS[0]}"
 
 END_TIME=$(date +%s)
@@ -280,7 +285,7 @@ DURATION_STR=$(format_duration "$DURATION")
 
 cat > "$INVOCATION_DIR/metadata.txt" <<EOF
 Date/Time:  $NOW_HUMAN
-Agent:      $PRESET ($AGENT_CMD)
+Agent:      $PRESET (${cmd_parts[0]})
 Mode:       $MODE
 Session:    $SESSION_CONTEXT
 Prompt:     $*
