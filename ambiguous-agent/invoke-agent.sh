@@ -60,7 +60,7 @@ PRESET_codex_EXEC_ARGS="--full-auto"
 
 usage() {
     cat >&2 <<EOF
-Usage: $(basename "$0") [-e|-p] [-a <agent>] [-s] <prompt...>
+Usage: $(basename "$0") [-e|-p] [-a <agent>] [-s] [-f <file>] <prompt...>
 
 Modes:
   -p  Prompt mode: ask questions, read-only context
@@ -69,6 +69,7 @@ Modes:
 Options:
   -a <agent>  Select agent preset (default: $DEFAULT_PRESET)
   -s          Session context: indicates invocation is from a parent session
+  -f <file>   Read prompt from file (use - for stdin)
 
 Available presets:
   copilot   GitHub Copilot CLI
@@ -224,6 +225,7 @@ build_agent_command() {
 PRESET="${AGENT_PRESET:-$DEFAULT_PRESET}"
 MODE=""
 SESSION_CONTEXT="false"
+PROMPT_FILE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -240,6 +242,11 @@ while [[ $# -gt 0 ]]; do
             SESSION_CONTEXT="true"
             shift
             ;;
+        -f)
+            [[ $# -lt 2 ]] && usage
+            PROMPT_FILE="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             ;;
@@ -250,6 +257,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "$MODE" ]] && usage
+
+# Read prompt from file if -f was specified
+if [[ -n "$PROMPT_FILE" ]]; then
+    if [[ "$PROMPT_FILE" == "-" ]]; then
+        PROMPT=$(cat)
+    elif [[ -f "$PROMPT_FILE" ]]; then
+        PROMPT=$(cat "$PROMPT_FILE")
+    else
+        echo "Error: File not found: $PROMPT_FILE" >&2
+        exit 1
+    fi
+    set -- "$PROMPT"
+fi
+
 [[ $# -lt 1 ]] && usage
 
 CALL_PWD=$(pwd)

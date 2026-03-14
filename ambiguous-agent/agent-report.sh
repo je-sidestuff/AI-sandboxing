@@ -23,14 +23,15 @@ INVOKE_AGENT="${SCRIPT_DIR}/invoke-agent.sh"
 
 usage() {
     cat >&2 <<EOF
-Usage: $(basename "$0") [-d DATE] [-a AGENT] [-m MODE]
+Usage: $(basename "$0") [-d DATE] [-a AGENT] [-m MODE] [-c "CUSTOM PROMPT"]
 
 Generate a summary report of agent usage.
 
 Options:
   -d DATE    Date to report on (YYYY-MM-DD format, default: today)
   -a AGENT   Agent preset to use for generating report (default: claude)
-  -m MODE    Report mode: DAILY, WEEKLY, MONTHLY (default: \$AGENT_REPORT_MODE or DAILY)
+  -m MODE    Report mode: DAILY, WEEKLY, MONTHLY, CUSTOM (default: \$AGENT_REPORT_MODE or DAILY)
+  -c PROMPT  Custom report prompt (implies -m CUSTOM). Use this to request specific analyses.
   -h         Show this help message
 
 Environment:
@@ -42,6 +43,8 @@ Examples:
   $(basename "$0") -d 2026-03-12        # Generate report for specific date
   $(basename "$0") -m WEEKLY            # Generate weekly report
   $(basename "$0") -a gemini -d 2026-03-10  # Use gemini for March 10th report
+  $(basename "$0") -c "Analyze programming languages used in recent work"
+  $(basename "$0") -c "What Terraform resources have we been working with?"
 
 EOF
     exit 1
@@ -69,6 +72,13 @@ get_date_range() {
             START_DATE=$(date -d "$target_date" +%Y-%m-01)
             END_DATE=$(date -d "$START_DATE + 1 month - 1 day" +%Y-%m-%d)
             PERIOD_DESC=$(date -d "$target_date" +"%B %Y")
+            ;;
+        CUSTOM)
+            # Custom reports analyze all available records by default
+            # Use a wide date range to capture everything
+            START_DATE="2020-01-01"
+            END_DATE=$(date +%Y-%m-%d)
+            PERIOD_DESC="Custom analysis"
             ;;
         *)
             echo "Error: Unknown report mode '$mode'" >&2
@@ -122,6 +132,7 @@ find_records_for_period() {
 TARGET_DATE=$(date +%Y-%m-%d)
 AGENT_PRESET="claude"
 REPORT_MODE="$AGENT_REPORT_MODE"
+CUSTOM_PROMPT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -140,6 +151,12 @@ while [[ $# -gt 0 ]]; do
             REPORT_MODE="$2"
             shift 2
             ;;
+        -c)
+            [[ $# -lt 2 ]] && usage
+            CUSTOM_PROMPT="$2"
+            REPORT_MODE="CUSTOM"
+            shift 2
+            ;;
         -h|--help)
             usage
             ;;
@@ -149,6 +166,12 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Validate custom mode has a prompt
+if [[ "$REPORT_MODE" == "CUSTOM" && -z "$CUSTOM_PROMPT" ]]; then
+    echo "Error: CUSTOM mode requires a prompt via -c flag" >&2
+    exit 1
+fi
 
 # Validate date format
 if ! date -d "$TARGET_DATE" &>/dev/null; then
@@ -178,26 +201,71 @@ if [[ ${#PERIOD_RECORDS[@]} -eq 0 ]]; then
 fi
 
 # Generate report filename (use uppercase mode as stored)
-BASE_REPORT_FILE="${REPORTS_DIR}/report_${REPORT_MODE}_${TARGET_DATE}.md"
-
-# Check if report already exists and find next revision number
-if [[ -f "$BASE_REPORT_FILE" ]]; then
-    rev=2
-    while [[ -f "${REPORTS_DIR}/report_${REPORT_MODE}_${TARGET_DATE}-rev${rev}.md" ]]; do
-        ((rev++))
-    done
-    REPORT_FILE="${REPORTS_DIR}/report_${REPORT_MODE}_${TARGET_DATE}-rev${rev}.md"
-else
+if [[ "$REPORT_MODE" == "CUSTOM" ]]; then
+    # Custom reports use timestamp-based naming
+    TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
+    BASE_REPORT_FILE="${REPORTS_DIR}/report_CUSTOM_${TIMESTAMP}.md"
     REPORT_FILE="$BASE_REPORT_FILE"
+else
+    BASE_REPORT_FILE="${REPORTS_DIR}/report_${REPORT_MODE}_${TARGET_DATE}.md"
+
+    # Check if report already exists and find next revision number
+    if [[ -f "$BASE_REPORT_FILE" ]]; then
+        rev=2
+        while [[ -f "${REPORTS_DIR}/report_${REPORT_MODE}_${TARGET_DATE}-rev${rev}.md" ]]; do
+            ((rev++))
+        done
+        REPORT_FILE="${REPORTS_DIR}/report_${REPORT_MODE}_${TARGET_DATE}-rev${rev}.md"
+    else
+        REPORT_FILE="$BASE_REPORT_FILE"
+    fi
 fi
 
 # Build the prompt for the agent
 RECORDS_LIST=$(printf '  - %s\n' "${PERIOD_RECORDS[@]}")
 
-PROMPT="Generate a summary report of agent usage for: $PERIOD_DESC
+# Context preamble for all reports (similar to agent-worker)
+CONTEXT_PREAMBLE="You are generating a report based on agent work records and history.
 
-Please analyze the agent invocation records in the RECORDS_PATH ($RECORDS_PATH) for the following directories:
+## Context Available to You
+
+You have access to agent records that document previous work sessions. These records can be found in the records directory ($RECORDS_PATH) and include:
+- Session directories containing metadata.txt and raw_output.txt files
+- Worker records: JSON files documenting completed work units, including timestamps, agents used, and exit codes
+- Session transcripts: Previous agent conversations and their outputs
+- Output artifacts: Files and documents created during previous work sessions
+
+## Available Records for Analysis
 $RECORDS_LIST
+
+## How to Use This Context
+
+1. **Read the metadata.txt files** in each directory to understand what work was done
+2. **Examine raw_output.txt files** to see the actual agent responses and outputs
+3. **Synthesize information** from multiple sources to create a comprehensive report
+4. **Focus on the specific request** outlined below
+
+"
+
+if [[ "$REPORT_MODE" == "CUSTOM" ]]; then
+    # Custom report uses the user-provided prompt
+    PROMPT="${CONTEXT_PREAMBLE}## Your Task
+
+$CUSTOM_PROMPT
+
+Create a comprehensive markdown report addressing the above request.
+Analyze the records to extract relevant information and insights.
+
+IMPORTANT: You MUST use your file write tool to create the report file. Do NOT just output the report to stdout.
+The report file path is: $REPORT_FILE
+Use your Write tool (or equivalent file creation tool) to write the markdown content to this exact path.
+
+Format the report in clean markdown with headers, bullet points, and tables where appropriate."
+else
+    # Standard periodic report
+    PROMPT="${CONTEXT_PREAMBLE}## Your Task
+
+Generate a summary report of agent usage for: $PERIOD_DESC
 
 Create a comprehensive markdown report that includes:
 
@@ -222,6 +290,7 @@ The report file path is: $REPORT_FILE
 Use your Write tool (or equivalent file creation tool) to write the markdown content to this exact path.
 
 Format the report in clean markdown with headers, bullet points, and tables where appropriate."
+fi
 
 echo "Generating $REPORT_MODE report for $PERIOD_DESC..."
 echo "Found ${#PERIOD_RECORDS[@]} record(s) to analyze"
@@ -251,7 +320,22 @@ while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
         echo ""
         echo "Warning: Report file was not created. Retrying..." >&2
         # Make the prompt even more explicit for retry
-        PROMPT="CRITICAL: The previous attempt failed to create the report file.
+        if [[ "$REPORT_MODE" == "CUSTOM" ]]; then
+            PROMPT="CRITICAL: The previous attempt failed to create the report file.
+
+You MUST use your Write tool to create this file: $REPORT_FILE
+
+Do NOT output the report content to stdout. Use your file writing capability.
+
+Your task: $CUSTOM_PROMPT
+
+Analyze records in: $RECORDS_PATH
+Directories: $RECORDS_LIST
+
+Read metadata.txt and raw_output.txt files from each directory.
+Write the markdown report to: $REPORT_FILE"
+        else
+            PROMPT="CRITICAL: The previous attempt failed to create the report file.
 
 You MUST use your Write tool to create this file: $REPORT_FILE
 
@@ -265,6 +349,7 @@ Include: overview, agent breakdown, usage patterns, git activity, performance su
 
 Read metadata.txt and raw_output.txt files from each directory.
 Write the markdown report to: $REPORT_FILE"
+        fi
     fi
 
     ((ATTEMPT++))
