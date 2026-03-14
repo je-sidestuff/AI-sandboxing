@@ -8,4 +8,3 @@ nvm install v22.19.0
 npm install -g @anthropic-ai/claude-code
 
 sudo apt update -y
-sudo apt install -y pocketsphinx pocketsphinx-en-us ffmpeg

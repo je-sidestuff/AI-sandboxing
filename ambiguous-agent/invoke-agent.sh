@@ -40,7 +40,7 @@ PRESET_gemini_EXEC_ARGS="--sandbox=permissive"
 PRESET_claude_CMD="claude"
 PRESET_claude_PROMPT_FLAG="-p"
 PRESET_claude_ADD_DIR_FLAG="--add-dir"
-PRESET_claude_EXEC_ARGS="--dangerously-skip-permissions"
+PRESET_claude_EXEC_ARGS="--permission-mode acceptEdits"
 
 # OpenCode
 PRESET_opencode_CMD="opencode run"

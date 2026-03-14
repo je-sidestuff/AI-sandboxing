@@ -58,6 +58,8 @@
     "mounts": [
         "type=bind,source=${localEnv:HOME}/.aws,target=/home/vscode/.aws,consistency=cached",
         "type=bind,source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,consistency=cached",
+        "type=bind,source=${localEnv:HOME}/workspace/slopspaces,target=/workspaces/slopspaces,consistency=cached",
+        "type=bind,source=${localEnv:HOME}/workspace/slopspaces/agent-records,target=/workspaces/agent-records,consistency=cached",
         "type=bind,source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,readonly"
     ],
     "initializeCommand": "bash ${localWorkspaceFolder}/.devcontainer/init_command_script.sh"
