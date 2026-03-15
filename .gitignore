@@ -2,6 +2,12 @@
 ignored-scratch/
 ignored-scratch/**
 
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+
 # Binaries
 ambiguous-agent/ambiguous-shell
 agent-worker/agent-worker

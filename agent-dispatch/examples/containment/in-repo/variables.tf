@@ -14,26 +14,10 @@ variable "github_pat" {
 # These parameters have reasonable defaults.
 # ---------------------------------------------------------------------------------------------------------------------
 
-variable "name" {
-  description = "The name of the repo to create."
+variable "dispatcher_name" {
+  description = "The name of the dispatcher."
   type        = string
-  default     = "ai-containment"
-}
-
-variable "visibility" {
-  description = "The visibility for the smart template repo to deploy. (public or private)"
-  type        = string
-  default     = "private"
-  validation {
-    condition     = contains(["public", "private"], var.visibility)
-    error_message = "The visibility must be 'public' or 'private'."
-  }
-}
-
-variable "description" {
-  description = "Description of the repo."
-  type        = string
-  default     = "A repository for AI containment."
+  default     = "dispatcher"
 }
 
 variable "slopspaces_working_dir" {

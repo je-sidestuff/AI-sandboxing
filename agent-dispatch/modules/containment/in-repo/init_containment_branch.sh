@@ -1,15 +1,16 @@
 #!/bin/bash
 
-# Description: This script creates an in-repo containment environment for AI processing.
-#              It clones a repository, creates a branch for AI work, separates the .git
+# Description: This script sets up an in-repo containment environment for AI processing.
+#              It clones a repository at a pre-created branch, separates the .git
 #              state for security, and places the work unit in the SLOPSPACES input
 #              directory for the agent-worker to process.
 #
 # Required environment variables:
-#   RANDOM_SUFFIX        - A random string to ensure unique directory names
+#   UNIX_TIMESTAMP       - Unix seconds timestamp for unique directory naming
+#   BRANCH_NAME          - The pre-created branch name to clone (created by terraform)
 #   SLOPSPACES_WORK_DIR  - The SLOPSPACES working directory (e.g., /workspaces/slopspaces/working/)
 #   SOURCE_REPO_URL      - The authenticated HTTPS URL of the source repository to clone
-#   DISPATCHER_NAME      - The name of the dispatcher (used for branch naming)
+#   DISPATCHER_NAME      - The name of the dispatcher (used for directory naming)
 
 set -e
 
@@ -21,18 +22,18 @@ set -e
 #     - <repo contents>   (working copy without .git)
 #     - INSTRUCTION.md    (instructions for the agent)
 
-OUTER_DIR="${SLOPSPACES_WORK_DIR}/containment_${DISPATCHER_NAME}_${RANDOM_SUFFIX}"
-WORKER_DIR="/workspaces/slopspaces/input/any/containment_${DISPATCHER_NAME}_${RANDOM_SUFFIX}"
-BRANCH_NAME="dispatch-${DISPATCHER_NAME}-${RANDOM_SUFFIX}"
+OUTER_DIR="${SLOPSPACES_WORK_DIR}/containment_${DISPATCHER_NAME}_${UNIX_TIMESTAMP}"
+WORKER_DIR="/workspaces/slopspaces/input/any/containment_${DISPATCHER_NAME}_${UNIX_TIMESTAMP}"
+# BRANCH_NAME is now passed from terraform (already created)
 
 echo "========================================"
 echo "In-Repo Containment Setup"
 echo "========================================"
 echo "Dispatcher: ${DISPATCHER_NAME}"
-echo "Random suffix: ${RANDOM_SUFFIX}"
+echo "Unix timestamp: ${UNIX_TIMESTAMP}"
 echo "Outer directory: ${OUTER_DIR}"
 echo "Worker directory: ${WORKER_DIR}"
-echo "Branch name: ${BRANCH_NAME}"
+echo "Branch name: ${BRANCH_NAME} (pre-created by terraform)"
 echo "========================================"
 
 clean_up_and_report_failure() {
@@ -53,24 +54,27 @@ if [ ! -d "$OUTER_DIR" ]; then
 fi
 echo "Created: ${OUTER_DIR}"
 
-# Step 2: Clone the repository into the outer folder
+# Step 2: Clone the repository at the pre-created branch
 echo ""
-echo "Step 2: Cloning repository..."
+echo "Step 2: Cloning repository at branch ${BRANCH_NAME}..."
 echo "Source: $SOURCE_REPO_URL"
 echo "Sleeping for 5 seconds to allow for any potential setup delays..."
 sleep 5
-git clone "$SOURCE_REPO_URL" "$OUTER_DIR/repo"
+git clone --branch "$BRANCH_NAME" --single-branch "$SOURCE_REPO_URL" "$OUTER_DIR/repo"
 if [ $? -ne 0 ]; then
-    clean_up_and_report_failure "Failed to clone repository"
+    clean_up_and_report_failure "Failed to clone repository at branch ${BRANCH_NAME}"
 fi
-echo "Cloned repository to: ${OUTER_DIR}/repo"
+echo "Cloned repository to: ${OUTER_DIR}/repo (branch: ${BRANCH_NAME})"
 
-# Step 3: Create and checkout the work branch
+# Step 3: Verify we are on the correct branch
 echo ""
-echo "Step 3: Creating work branch..."
+echo "Step 3: Verifying branch..."
 cd "$OUTER_DIR/repo" || clean_up_and_report_failure "Failed to change directory to cloned repository"
-git switch -c "$BRANCH_NAME"
-echo "Created branch: ${BRANCH_NAME}"
+CURRENT_BRANCH=$(git branch --show-current)
+if [ "$CURRENT_BRANCH" != "$BRANCH_NAME" ]; then
+    clean_up_and_report_failure "Expected branch ${BRANCH_NAME} but found ${CURRENT_BRANCH}"
+fi
+echo "Verified on branch: ${BRANCH_NAME}"
 
 # Save the branch name to the outer directory for later reference
 echo "$BRANCH_NAME" > "${OUTER_DIR}/branch_name"
@@ -120,18 +124,9 @@ echo ""
 echo "The agent-worker will pick up this work unit from the input directory."
 echo "========================================"
 
-# --- TEMPORARY EXIT FOR VERIFICATION ---
-echo ""
-echo "Exiting early for manual verification."
-exit 0
-# --- END TEMPORARY EXIT ---
-
-# TODO: The following code handles post-processing after the agent completes.
-# This should be triggered separately, possibly by a watcher or the worker itself.
-
 # Wait for up to 10 minutes for the AI to process the work unit
 # The agent-worker moves completed work to /workspaces/slopspaces/output/
-OUTPUT_DIR="/workspaces/slopspaces/output/containment_${DISPATCHER_NAME}_${RANDOM_SUFFIX}"
+OUTPUT_DIR="/workspaces/slopspaces/output/containment_${DISPATCHER_NAME}_${UNIX_TIMESTAMP}"
 echo "Waiting for the AI to process the repository..."
 echo "Expected output location: ${OUTPUT_DIR}"
 TIMEOUT=600 # 10 minutes in seconds
