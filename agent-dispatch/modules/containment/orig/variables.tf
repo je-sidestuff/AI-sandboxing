@@ -15,7 +15,7 @@ variable "github_pat" {
 # ---------------------------------------------------------------------------------------------------------------------
 
 variable "name" {
-  description = "The name of the repo to create."
+  description = "The name oh the repo to create."
   type        = string
   default     = "ai-containment"
 }

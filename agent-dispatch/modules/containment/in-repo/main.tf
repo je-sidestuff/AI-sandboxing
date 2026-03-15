@@ -1,46 +1,32 @@
 locals {
   random_result = random_string.random.result
+
+  # We name the branch after the dispatcher and the unix time TODO
+  branch_name = "dispatch-${var.dispatcher_name}-${local.random_result}"
 }
 
 resource "random_string" "random" {
-  length  = 8
+  length  = 4
   special = false
 }
 
-resource "github_repository" "containment_repo" {
-  name        = "${var.name}-${local.random_result}"
-  description = var.description
-  visibility  = var.visibility
-
-  is_template = false
-
-  auto_init = true
+data "github_repository" "target_repo" {
+  full_name = github_repository.containment_repo.full_name
 }
 
-# After we have created the repo through TF we obtain a local copy to work with
-resource "terraform_data" "prepare_repo" {
+resource "terraform_data" "dispatch_first_work" {
   provisioner "local-exec" {
-    command = "${path.module}/init_containment_repo.sh > /tmp/loglog.txt 2>&1"
+    command = "${path.module}/init_containment_branch.sh > /tmp/loglog.txt 2>&1"
 
     environment = {
-      ACTION               = "create"
       RANDOM_SUFFIX        = local.random_result
+      SLOPSPACES_WORK_DIR  = var.slopspaces_working_dir
       SOURCE_REPO_URL      = replace(
-      "https://github.com/forjor/hello-copilot-cli.git", "https://", "https://${var.github_pat}@"
+      "https://github.com/je-sidestuff/AI-sandboxing.git", "https://", "https://${var.github_pat}@"
       )
-      REPO_HTTPS_CLONE_URL = replace(
-      github_repository.containment_repo.http_clone_url, "https://", "https://${var.github_pat}@"
-      )
+      DISPATCHER_NAME = "${var.dispatcher_name}"
     }
   }
-
-  depends_on = [ github_repository.containment_repo ]
-}
-
-# Bring in the created repo (as a second copy on the FLAZZERWOOZLE-WAS-HERE branch) so that we can work with it in TF
-data "github_repository" "containment_repo" {
-  full_name = github_repository.containment_repo.full_name
-  depends_on = [ terraform_data.prepare_repo ]
 }
 
 # Create a pull request from the FLAZZERWOOZLE-WAS-HERE branch to main so that we can have a PR to work with in the next steps
@@ -50,4 +36,6 @@ resource "github_repository_pull_request" "containment_pr" {
   head_ref      = "FLAZZERWOOZLE-WAS-HERE"
   base_ref      = "main"
   base_repository = data.github_repository.containment_repo.name
+
+  depends_on = [ terraform_data.dispatch_first_work ]
 }
