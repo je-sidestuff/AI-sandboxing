@@ -2,4 +2,8 @@
 ignored-scratch/
 ignored-scratch/**
 
+# Binaries
 ambiguous-agent/ambiguous-shell
+agent-worker/agent-worker
+agent-events/agent-events
+agent-dispatch/agent-dispatch
