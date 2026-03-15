@@ -321,21 +321,22 @@ func (m *EventsManager) createWorkUnit(name string, report *Report) error {
 	return nil
 }
 
-// handleTimerEvent processes a timer-type event
-func (m *EventsManager) handleTimerEvent(config *EventConfig, state *EventState) error {
+// handleTimerEvent processes a timer-type event.
+// Returns (true, nil) when a work unit was created, (false, nil) when not yet time, or (false, err) on error.
+func (m *EventsManager) handleTimerEvent(config *EventConfig, state *EventState) (bool, error) {
 	now := time.Now()
 
 	// Parse the interval
 	interval, err := time.ParseDuration(config.Interval)
 	if err != nil {
-		return fmt.Errorf("invalid interval %s: %w", config.Interval, err)
+		return false, fmt.Errorf("invalid interval %s: %w", config.Interval, err)
 	}
 
 	// Check if this is first run (NextRun is zero) or if it's time to run
 	shouldRun := state.NextRun.IsZero() || now.After(state.NextRun)
 
 	if !shouldRun {
-		return nil
+		return false, nil
 	}
 
 	log.Printf("[%s] Timer event triggered: %s", m.managerID, config.Name)
@@ -354,7 +355,7 @@ func (m *EventsManager) handleTimerEvent(config *EventConfig, state *EventState)
 	// Create work unit
 	workUnitName := generateWorkUnitName(config.Name)
 	if err := m.createWorkUnit(workUnitName, &report); err != nil {
-		return fmt.Errorf("failed to create work unit: %w", err)
+		return false, fmt.Errorf("failed to create work unit: %w", err)
 	}
 
 	// Update state
@@ -365,11 +366,12 @@ func (m *EventsManager) handleTimerEvent(config *EventConfig, state *EventState)
 
 	log.Printf("[%s] Created work unit: %s (next run: %s)", m.managerID, workUnitName, state.NextRun.Format(time.RFC3339))
 
-	return nil
+	return true, nil
 }
 
-// handleScheduleEvent processes a schedule-type event
-func (m *EventsManager) handleScheduleEvent(config *EventConfig, state *EventState) error {
+// handleScheduleEvent processes a schedule-type event.
+// Returns (true, nil) when a work unit was created, (false, nil) when not yet time, or (false, err) on error.
+func (m *EventsManager) handleScheduleEvent(config *EventConfig, state *EventState) (bool, error) {
 	now := time.Now()
 	yesterday := yesterdayDate()
 
@@ -377,7 +379,7 @@ func (m *EventsManager) handleScheduleEvent(config *EventConfig, state *EventSta
 	if config.ReportType == "daily" {
 		// Check if we already ran for yesterday
 		if state.LastResult == yesterday {
-			return nil // Already processed yesterday's report
+			return false, nil // Already processed yesterday's report
 		}
 
 		// Check if there's already a pending work unit for yesterday
@@ -388,13 +390,13 @@ func (m *EventsManager) handleScheduleEvent(config *EventConfig, state *EventSta
 		if pending {
 			log.Printf("[%s] Work unit already pending for daily report on %s", m.managerID, yesterday)
 			state.LastResult = yesterday
-			return nil
+			return false, nil
 		}
 
 		// Parse schedule time
 		scheduleTime, err := time.Parse("15:04", config.ScheduleAt)
 		if err != nil {
-			return fmt.Errorf("invalid schedule_at %s: %w", config.ScheduleAt, err)
+			return false, fmt.Errorf("invalid schedule_at %s: %w", config.ScheduleAt, err)
 		}
 
 		// Check if current time is past the scheduled time
@@ -402,7 +404,7 @@ func (m *EventsManager) handleScheduleEvent(config *EventConfig, state *EventSta
 		scheduledTime := time.Date(2000, 1, 1, scheduleTime.Hour(), scheduleTime.Minute(), 0, 0, time.UTC)
 
 		if currentTime.Before(scheduledTime) {
-			return nil // Not yet time to run
+			return false, nil // Not yet time to run
 		}
 
 		log.Printf("[%s] Schedule event triggered: %s (for date: %s)", m.managerID, config.Name, yesterday)
@@ -416,7 +418,7 @@ func (m *EventsManager) handleScheduleEvent(config *EventConfig, state *EventSta
 
 		workUnitName := generateWorkUnitName(fmt.Sprintf("daily-report-%s", yesterday))
 		if err := m.createWorkUnit(workUnitName, &report); err != nil {
-			return fmt.Errorf("failed to create work unit: %w", err)
+			return false, fmt.Errorf("failed to create work unit: %w", err)
 		}
 
 		// Update state
@@ -425,24 +427,27 @@ func (m *EventsManager) handleScheduleEvent(config *EventConfig, state *EventSta
 		state.LastResult = yesterday
 
 		log.Printf("[%s] Created daily report work unit: %s", m.managerID, workUnitName)
+		return true, nil
 	}
 
-	return nil
+	return false, nil
 }
 
-// processEvents checks and processes all configured events
+// processEvents checks and processes all configured events.
+// Returns the number of events that actually fired (created work units) this cycle.
 func (m *EventsManager) processEvents() (int, error) {
-	processed := 0
+	fired := 0
 
 	for name, config := range m.configs {
 		state := m.states[name]
 
+		var didFire bool
 		var err error
 		switch config.Type {
 		case EventTypeTimer:
-			err = m.handleTimerEvent(config, state)
+			didFire, err = m.handleTimerEvent(config, state)
 		case EventTypeSchedule:
-			err = m.handleScheduleEvent(config, state)
+			didFire, err = m.handleScheduleEvent(config, state)
 		default:
 			log.Printf("[%s] Unknown event type: %s", m.managerID, config.Type)
 			continue
@@ -450,12 +455,12 @@ func (m *EventsManager) processEvents() (int, error) {
 
 		if err != nil {
 			log.Printf("[%s] Error processing event %s: %v", m.managerID, name, err)
-		} else {
-			processed++
+		} else if didFire {
+			fired++
 		}
 	}
 
-	return processed, nil
+	return fired, nil
 }
 
 // run is the main processing loop
@@ -505,9 +510,6 @@ func (m *EventsManager) run() {
 }
 
 func main() {
-	// Seed random number generator
-	rand.Seed(time.Now().UnixNano())
-
 	manager := NewEventsManager()
 
 	if err := manager.ensureDirectories(); err != nil {
