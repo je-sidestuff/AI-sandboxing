@@ -558,8 +558,17 @@ func (w *AgentWorker) executeAgent(folderPath string, inst *Instruction, agent s
 		modeFlag = "-e"
 	}
 
-	// Build command arguments
-	cmdArgs := []string{modeFlag, "-a", agent, inst.Instruction}
+	// Write instruction to a temp file to avoid shell argument parsing issues
+	// (multi-line prompts with lines starting with "-" get misinterpreted as options)
+	promptFile := filepath.Join(folderPath, ".prompt.tmp")
+	if err := os.WriteFile(promptFile, []byte(inst.Instruction), 0644); err != nil {
+		log.Printf("Error: failed to write prompt file: %v", err)
+		return 1
+	}
+	defer os.Remove(promptFile)
+
+	// Build command arguments using -f to read prompt from file
+	cmdArgs := []string{modeFlag, "-a", agent, "-f", promptFile}
 
 	// Create command
 	cmd := exec.Command(invokeScript, cmdArgs...)
@@ -643,8 +652,17 @@ func (w *AgentWorker) executeReportAgent(folderPath string, report *Report, agen
 	// Reports always use execute mode to allow file creation
 	modeFlag := "-e"
 
-	// Build command arguments
-	cmdArgs := []string{modeFlag, "-a", agent, instruction}
+	// Write instruction to a temp file to avoid shell argument parsing issues
+	// (multi-line prompts with lines starting with "-" get misinterpreted as options)
+	promptFile := filepath.Join(folderPath, ".prompt.tmp")
+	if err := os.WriteFile(promptFile, []byte(instruction), 0644); err != nil {
+		log.Printf("Error: failed to write prompt file: %v", err)
+		return 1
+	}
+	defer os.Remove(promptFile)
+
+	// Build command arguments using -f to read prompt from file
+	cmdArgs := []string{modeFlag, "-a", agent, "-f", promptFile}
 
 	// Create command
 	cmd := exec.Command(invokeScript, cmdArgs...)

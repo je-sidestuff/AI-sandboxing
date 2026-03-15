@@ -214,8 +214,8 @@ build_agent_command() {
         args+=("$prompt_with_context")
     fi
 
-    echo "$cmd"
-    printf '%s\n' "${args[@]}"
+    # Output command and args using NUL separators to preserve multi-line content
+    printf '%s\0' "$cmd" "${args[@]}"
 }
 
 # ============================================================================
@@ -287,7 +287,8 @@ mkdir -p "$INVOCATION_DIR"
 
 gather_git_info "$CALL_PWD"
 
-mapfile -t cmd_parts < <(build_agent_command "$PRESET" "$MODE" "$CALL_PWD" "$RECORDS_PATH" "$@")
+# Use NUL-separated values to properly handle multi-line prompts
+mapfile -t -d '' cmd_parts < <(build_agent_command "$PRESET" "$MODE" "$CALL_PWD" "$RECORDS_PATH" "$@")
 [[ ${#cmd_parts[@]} -eq 0 ]] && exit 1
 
 # Split the command into words (handles multi-word commands like "opencode run")
