@@ -85,21 +85,16 @@ echo "Step 4: Isolating git state..."
 mv "$OUTER_DIR/repo/.git" "${OUTER_DIR}/git_state/.git"
 echo "Moved .git to: ${OUTER_DIR}/git_state/.git"
 
-# Step 5: Create the INSTRUCTION file in the repo
+# Step 5: Create the INSTRUCTION file in the repo (using execute mode)
 echo ""
-echo "Step 5: Creating INSTRUCTION file..."
-cat > "$OUTER_DIR/repo/INSTRUCTION.md" << 'INSTRUCTION_EOF'
-You are working on a contained branch for testing AI code generation.
-
-Please make meaningful improvements to this repository. Some suggestions:
-- Add useful documentation
-- Improve code quality
-- Add helpful comments
-- Fix any obvious issues
-
-When you are done, save your changes. The containment system will handle committing and pushing.
+echo "Step 5: Creating INSTRUCTION.json file (execute mode)..."
+cat > "$OUTER_DIR/repo/INSTRUCTION.json" << 'INSTRUCTION_EOF'
+{
+  "mode": "execute",
+  "instruction": "You are working on a contained branch for testing AI code generation.\n\nPlease make meaningful improvements to this repository. Some suggestions:\n- Add useful documentation\n- Improve code quality\n- Add helpful comments\n- Fix any obvious issues\n\nWhen you are done, save your changes. The containment system will handle committing and pushing."
+}
 INSTRUCTION_EOF
-echo "Created: ${OUTER_DIR}/repo/INSTRUCTION.md"
+echo "Created: ${OUTER_DIR}/repo/INSTRUCTION.json"
 
 # Step 6: Move the repo to the worker input directory
 echo ""
