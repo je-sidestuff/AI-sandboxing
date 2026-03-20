@@ -3,16 +3,6 @@
 # You must provide a value for each of these parameters.
 # ---------------------------------------------------------------------------------------------------------------------
 
-variable "name" {
-  description = "The name of the isolation repository to create."
-  type        = string
-}
-
-variable "dispatcher_name" {
-  description = "The name of the dispatcher."
-  type        = string
-}
-
 variable "github_pat" {
   description = "The personal access token used to authenticate for the runner-creation interactions."
   type        = string
@@ -24,16 +14,10 @@ variable "github_pat" {
 # These parameters have reasonable defaults.
 # ---------------------------------------------------------------------------------------------------------------------
 
-variable "target_repo" {
-  description = "The name of the repo to operate on."
+variable "dispatcher_name" {
+  description = "The name of the dispatcher."
   type        = string
-  default     = "je-sidestuff/AI-sandboxing"
-}
-
-variable "description" {
-  description = "Description of the repo."
-  type        = string
-  default     = "A repository for AI containment."
+  default     = "dispatcher"
 }
 
 variable "slopspaces_working_dir" {

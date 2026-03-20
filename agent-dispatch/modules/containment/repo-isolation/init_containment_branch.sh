@@ -7,9 +7,10 @@
 #
 # Required environment variables:
 #   UNIX_TIMESTAMP       - Unix seconds timestamp for unique directory naming
-#   BRANCH_NAME          - The pre-created branch name to clone (created by terraform)
+#   BRANCH_NAME          - The dispatch branch name to create in the isolation repo
 #   SLOPSPACES_WORK_DIR  - The SLOPSPACES working directory (e.g., /workspaces/slopspaces/working/)
-#   SOURCE_REPO_URL      - The authenticated HTTPS URL of the source repository to clone
+#   SOURCE_REPO_URL      - The authenticated HTTPS URL of the target repository (baseline source)
+#   ISOLATION_REPO_URL   - The authenticated HTTPS URL of the isolation repository
 #   DISPATCHER_NAME      - The name of the dispatcher (used for directory naming)
 
 set -e
@@ -33,7 +34,7 @@ echo "Dispatcher: ${DISPATCHER_NAME}"
 echo "Unix timestamp: ${UNIX_TIMESTAMP}"
 echo "Outer directory: ${OUTER_DIR}"
 echo "Worker directory: ${WORKER_DIR}"
-echo "Branch name: ${BRANCH_NAME} (pre-created by terraform)"
+echo "Branch name: ${BRANCH_NAME} (created by script in isolation repo)"
 echo "========================================"
 
 clean_up_and_report_failure() {
@@ -54,27 +55,27 @@ if [ ! -d "$OUTER_DIR" ]; then
 fi
 echo "Created: ${OUTER_DIR}"
 
-# Step 2: Clone the repository at the pre-created branch
+# Step 2: Clone the target repo for baseline content
 echo ""
-echo "Step 2: Cloning repository at branch ${BRANCH_NAME}..."
+echo "Step 2: Cloning target repo for baseline content..."
 echo "Source: $SOURCE_REPO_URL"
 echo "Sleeping for 5 seconds to allow for any potential setup delays..."
 sleep 5
-git clone --branch "$BRANCH_NAME" --single-branch "$SOURCE_REPO_URL" "$OUTER_DIR/repo"
+git clone --single-branch "$SOURCE_REPO_URL" "$OUTER_DIR/repo"
 if [ $? -ne 0 ]; then
-    clean_up_and_report_failure "Failed to clone repository at branch ${BRANCH_NAME}"
+    clean_up_and_report_failure "Failed to clone target repository"
 fi
-echo "Cloned repository to: ${OUTER_DIR}/repo (branch: ${BRANCH_NAME})"
+echo "Cloned target repository to: ${OUTER_DIR}/repo"
 
-# Step 3: Verify we are on the correct branch
+# Step 3: Push baseline to isolation repo and create the dispatch branch
 echo ""
-echo "Step 3: Verifying branch..."
+echo "Step 3: Pushing baseline to isolation repo and creating branch ${BRANCH_NAME}..."
 cd "$OUTER_DIR/repo" || clean_up_and_report_failure "Failed to change directory to cloned repository"
-CURRENT_BRANCH=$(git branch --show-current)
-if [ "$CURRENT_BRANCH" != "$BRANCH_NAME" ]; then
-    clean_up_and_report_failure "Expected branch ${BRANCH_NAME} but found ${CURRENT_BRANCH}"
-fi
-echo "Verified on branch: ${BRANCH_NAME}"
+git remote set-url origin "$ISOLATION_REPO_URL"
+git push origin main
+git checkout -b "$BRANCH_NAME"
+git push origin "$BRANCH_NAME"
+echo "Pushed baseline to isolation repo and created branch: ${BRANCH_NAME}"
 
 # Save the branch name to the outer directory for later reference
 echo "$BRANCH_NAME" > "${OUTER_DIR}/branch_name"

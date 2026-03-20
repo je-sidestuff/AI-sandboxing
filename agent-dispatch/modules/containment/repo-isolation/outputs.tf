@@ -1,5 +1,5 @@
-output "repo_ssh_clone_url" {
-  value = data.github_repository.target_repo.ssh_clone_url
+output "isolation_repo_ssh_clone_url" {
+  value = github_repository.isolation_repo.ssh_clone_url
 }
 
 output "branch_name" {
@@ -15,4 +15,9 @@ output "unix_timestamp" {
 output "dispatch_time" {
   description = "The RFC3339 formatted time when this dispatch was created"
   value       = time_static.dispatch_time.rfc3339
+}
+
+output "pr_comments" {
+  description = "List of all comment bodies on the containment PR at time of apply"
+  value       = jsondecode(data.external.pr_comments.result.comments_json)
 }

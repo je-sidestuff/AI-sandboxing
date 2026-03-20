@@ -49,3 +49,16 @@ resource "github_repository_pull_request" "containment_pr" {
 
   depends_on = [terraform_data.dispatch_first_work]
 }
+
+# Fetch all comments on the containment PR using the shared Python script
+data "external" "pr_comments" {
+  program = ["python3", "${path.module}/../scripts/fetch_pr_comments.py"]
+
+  query = {
+    pat       = var.github_pat
+    repo      = var.target_repo
+    pr_number = tostring(github_repository_pull_request.containment_pr.number)
+  }
+
+  depends_on = [github_repository_pull_request.containment_pr]
+}
