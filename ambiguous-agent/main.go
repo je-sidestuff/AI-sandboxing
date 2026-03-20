@@ -43,6 +43,9 @@ var (
 	agentStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("141")).
 			Bold(true)
+
+	continuationStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("243"))
 )
 
 // CommandRecord holds metadata for each command
@@ -88,10 +91,12 @@ func main() {
 	fmt.Println(sessionStyle.Render(fmt.Sprintf("● session: %s", sessionDir)))
 	fmt.Println(sessionStyle.Render(fmt.Sprintf("  agent: %s | 'set-agent <name>' to change | 'list-agents' for options", currentAgent)))
 	fmt.Println(sessionStyle.Render("  type 'exit!' to end | 'agent <prompt>' to invoke AI"))
+	fmt.Println(sessionStyle.Render("  multi-line: trailing \\, unclosed quotes, or <<<DELIMITER"))
 	fmt.Println()
 
 	readlineRecords := filepath.Join(os.Getenv("HOME"), ".ambiguous_records")
 	cwd, _ := os.Getwd()
+	oldCwd := cwd // For cd - support
 
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          buildPrompt(cwd, currentAgent),
@@ -109,9 +114,9 @@ func main() {
 	encoder := json.NewEncoder(logFile)
 
 	for {
-		line, err := rl.Readline()
+		initialLine, err := rl.Readline()
 		if err == readline.ErrInterrupt {
-			if len(line) == 0 {
+			if len(initialLine) == 0 {
 				break
 			}
 			continue
@@ -120,8 +125,22 @@ func main() {
 			break
 		}
 
-		line = strings.TrimSpace(line)
-		if line == "" {
+		initialLine = strings.TrimSpace(initialLine)
+		if initialLine == "" {
+			continue
+		}
+
+		// Handle multi-line input (backslash, heredoc, unclosed quotes)
+		mainPrompt := buildPrompt(cwd, currentAgent)
+		line, err := readMultiLine(rl, initialLine, mainPrompt)
+		if err == readline.ErrInterrupt {
+			continue // User cancelled multi-line input
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, errorStyle.Render(fmt.Sprintf("input error: %v", err)))
 			continue
 		}
 
@@ -140,6 +159,21 @@ func main() {
 
 		// Handle special commands
 		var exitCode int
+
+		// Handle cd command specially (persists directory change)
+		if line == "cd" || strings.HasPrefix(line, "cd ") {
+			target := strings.TrimSpace(strings.TrimPrefix(line, "cd"))
+			newDir, err := handleCd(target, cwd, oldCwd)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, errorStyle.Render(fmt.Sprintf("cd: %v", err)))
+			} else {
+				oldCwd = cwd
+				cwd = newDir
+				rl.SetPrompt(buildPrompt(cwd, currentAgent))
+			}
+			continue
+		}
+
 		if strings.HasPrefix(line, "set-agent ") {
 			newAgent := strings.TrimSpace(strings.TrimPrefix(line, "set-agent "))
 			if isValidAgent(newAgent) {
@@ -204,11 +238,108 @@ func isValidAgent(name string) bool {
 	return false
 }
 
-func buildPrompt(cwd string, agent string) string {
-	dir := filepath.Base(cwd)
-	if dir == "/" {
-		dir = "/"
+// handleCd processes a cd command and returns the new directory or an error.
+// Handles: cd (home), cd - (previous), cd ~ (home), cd ~/path, and regular paths.
+func handleCd(target string, cwd string, oldCwd string) (string, error) {
+	home := os.Getenv("HOME")
+
+	// Determine target directory
+	var targetDir string
+	switch {
+	case target == "" || target == "~":
+		// cd or cd ~ -> home directory
+		targetDir = home
+	case target == "-":
+		// cd - -> previous directory
+		if oldCwd == cwd {
+			return "", fmt.Errorf("OLDPWD not set")
+		}
+		targetDir = oldCwd
+		fmt.Println(targetDir) // bash prints the directory when using cd -
+	case strings.HasPrefix(target, "~/"):
+		// cd ~/path -> expand tilde
+		targetDir = filepath.Join(home, target[2:])
+	default:
+		// Handle quoted strings by stripping outer quotes
+		if (strings.HasPrefix(target, "\"") && strings.HasSuffix(target, "\"")) ||
+			(strings.HasPrefix(target, "'") && strings.HasSuffix(target, "'")) {
+			target = target[1 : len(target)-1]
+		}
+		targetDir = target
 	}
+
+	// Make absolute if relative
+	if !filepath.IsAbs(targetDir) {
+		targetDir = filepath.Join(cwd, targetDir)
+	}
+
+	// Clean the path
+	targetDir = filepath.Clean(targetDir)
+
+	// Attempt to change directory
+	if err := os.Chdir(targetDir); err != nil {
+		return "", err
+	}
+
+	// Get the actual path (resolves symlinks, normalizes)
+	newCwd, err := os.Getwd()
+	if err != nil {
+		return targetDir, nil // fallback to what we computed
+	}
+	return newCwd, nil
+}
+
+// abbreviatePath shortens a path for display in the prompt.
+// Shows ~ for home, and abbreviates long paths to fit within maxLen.
+func abbreviatePath(path string, maxLen int) string {
+	home := os.Getenv("HOME")
+
+	// Replace home with ~
+	if home != "" && strings.HasPrefix(path, home) {
+		path = "~" + path[len(home):]
+	}
+
+	// If it fits, return as-is
+	if len(path) <= maxLen {
+		return path
+	}
+
+	// For root or very short paths
+	if path == "/" || path == "~" {
+		return path
+	}
+
+	// Strategy: keep the last components that fit, prefix with ...
+	parts := strings.Split(path, string(filepath.Separator))
+	if len(parts) <= 2 {
+		// Already minimal, just truncate
+		if len(path) > maxLen {
+			return "..." + path[len(path)-(maxLen-3):]
+		}
+		return path
+	}
+
+	// Build from the end, keeping as many components as fit
+	result := parts[len(parts)-1]
+	for i := len(parts) - 2; i >= 0; i-- {
+		candidate := parts[i] + string(filepath.Separator) + result
+		if len(candidate)+4 > maxLen { // +4 for ".../""
+			break
+		}
+		result = candidate
+	}
+
+	// If we didn't include all parts, add prefix
+	if !strings.HasPrefix(path, result) {
+		result = ".../" + result
+	}
+
+	return result
+}
+
+func buildPrompt(cwd string, agent string) string {
+	// Show abbreviated path (max 30 chars for the path portion)
+	dir := abbreviatePath(cwd, 30)
 	return agentStyle.Render("["+agent+"]") + " " + promptStyle.Render(dir) + " › "
 }
 
@@ -362,4 +493,115 @@ func findInvokeScript() string {
 	}
 
 	return ""
+}
+
+// readMultiLine reads a potentially multi-line input, handling:
+// 1. Backslash continuation (trailing \)
+// 2. Heredoc-style input (<<<DELIMITER ... DELIMITER)
+// 3. Unclosed single or double quotes
+// Returns the complete input and any error encountered.
+func readMultiLine(rl *readline.Instance, initialLine string, mainPrompt string) (string, error) {
+	line := initialLine
+	continuationPrompt := continuationStyle.Render("  > ")
+
+	// Check for heredoc syntax: <<<DELIMITER
+	if strings.HasPrefix(line, "<<<") {
+		delimiter := strings.TrimSpace(strings.TrimPrefix(line, "<<<"))
+		if delimiter == "" {
+			delimiter = "EOF" // Default delimiter
+		}
+		rl.SetPrompt(continuationPrompt)
+		var lines []string
+		for {
+			nextLine, err := rl.Readline()
+			if err != nil {
+				rl.SetPrompt(mainPrompt)
+				return "", err
+			}
+			if strings.TrimSpace(nextLine) == delimiter {
+				break
+			}
+			lines = append(lines, nextLine)
+		}
+		rl.SetPrompt(mainPrompt)
+		return strings.Join(lines, "\n"), nil
+	}
+
+	// Check for backslash continuation or unclosed quotes
+	for {
+		needsContinuation, quoteChar := checkContinuation(line)
+		if !needsContinuation {
+			break
+		}
+
+		// Set appropriate continuation prompt
+		if quoteChar != 0 {
+			rl.SetPrompt(continuationStyle.Render(string(quoteChar) + "> "))
+		} else {
+			rl.SetPrompt(continuationPrompt)
+		}
+
+		nextLine, err := rl.Readline()
+		if err != nil {
+			rl.SetPrompt(mainPrompt)
+			return "", err
+		}
+
+		// For backslash continuation, remove the trailing backslash and join
+		if quoteChar == 0 && strings.HasSuffix(strings.TrimRight(line, " \t"), "\\") {
+			line = strings.TrimSuffix(strings.TrimRight(line, " \t"), "\\") + "\n" + nextLine
+		} else {
+			// For quote continuation, just append with newline
+			line = line + "\n" + nextLine
+		}
+	}
+
+	rl.SetPrompt(mainPrompt)
+	return line, nil
+}
+
+// checkContinuation determines if the line needs continuation.
+// Returns (needsContinuation, quoteChar) where quoteChar is the unclosed quote
+// character ('"' or '\'') or 0 if continuation is due to backslash.
+func checkContinuation(line string) (bool, rune) {
+	// Check for trailing backslash (not escaped)
+	trimmed := strings.TrimRight(line, " \t")
+	if strings.HasSuffix(trimmed, "\\") && !strings.HasSuffix(trimmed, "\\\\") {
+		return true, 0
+	}
+
+	// Count unescaped quotes to check for unclosed strings
+	var singleQuotes, doubleQuotes int
+	inSingle, inDouble := false, false
+	escaped := false
+
+	for _, r := range line {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if r == '\\' && !inSingle {
+			// Backslash only escapes in double quotes or outside quotes
+			escaped = true
+			continue
+		}
+		if r == '\'' && !inDouble {
+			inSingle = !inSingle
+			singleQuotes++
+		}
+		if r == '"' && !inSingle {
+			inDouble = !inDouble
+			doubleQuotes++
+		}
+	}
+
+	// Odd number of quotes means unclosed
+	if singleQuotes%2 != 0 {
+		return true, '\''
+	}
+	if doubleQuotes%2 != 0 {
+		return true, '"'
+	}
+
+	return false, 0
 }
