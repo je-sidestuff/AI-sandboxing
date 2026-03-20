@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch all comments from a GitHub PR using PyGithub.
+"""Fetch all comments from a GitHub PR using the GitHub REST API.
 
 Terraform external data source interface:
   - Reads a JSON object from stdin with keys: pat, repo, pr_number
@@ -12,26 +12,42 @@ Usage (standalone):
 
 import json
 import sys
+import urllib.request
 
-from github import Github
+
+def github_get(url: str, pat: str) -> list:
+    """Fetch all pages from a GitHub API endpoint and return combined results."""
+    results = []
+    while url:
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {pat}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        })
+        with urllib.request.urlopen(req) as resp:
+            results.extend(json.loads(resp.read()))
+            # Follow Link: <next_url>; rel="next" pagination
+            link_header = resp.headers.get("Link", "")
+            url = None
+            for part in link_header.split(","):
+                part = part.strip()
+                if 'rel="next"' in part:
+                    url = part.split(";")[0].strip().strip("<>")
+                    break
+    return results
 
 
 def fetch_comments(pat: str, repo: str, pr_number: int) -> list[str]:
     """Return all comment bodies on the given PR (issue + review comments)."""
-    g = Github(pat)
-    repo_obj = g.get_repo(repo)
-    pr = repo_obj.get_pull(pr_number)
+    base = f"https://api.github.com/repos/{repo}"
+    issue_url = f"{base}/issues/{pr_number}/comments?per_page=100"
+    review_url = f"{base}/pulls/{pr_number}/comments?per_page=100"
 
     comments = []
-
-    # General PR comments (issue comments on the PR thread)
-    for comment in pr.get_issue_comments():
-        comments.append(comment.body)
-
-    # Inline review comments (on specific lines of code)
-    for comment in pr.get_review_comments():
-        comments.append(comment.body)
-
+    for item in github_get(issue_url, pat):
+        comments.append(item["body"])
+    for item in github_get(review_url, pat):
+        comments.append(item["body"])
     return comments
 
 
