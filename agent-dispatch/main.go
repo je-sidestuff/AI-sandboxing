@@ -6,20 +6,28 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
+
+	"agent-dispatch/prpoller"
 
 	"github.com/google/uuid"
 )
 
 // Default paths
 const (
-	defaultInputDir   = "/workspaces/slopspaces/input/"
-	defaultOutputDir  = "/workspaces/slopspaces/output/"
-	defaultRecordsDir = "/workspaces/slopspaces/agent-records/"
-	pollInterval      = 500 * time.Millisecond // Fast polling for responsive dispatch
-	defaultTimeout    = 30 * time.Minute       // Default timeout for dispatch operations
+	defaultInputDir        = "/workspaces/slopspaces/input/"
+	defaultOutputDir       = "/workspaces/slopspaces/output/"
+	defaultRecordsDir      = "/workspaces/slopspaces/agent-records/"
+	defaultDispatcherLive  = "/workspaces/slopspaces/dispatcher/live"
+	pollInterval           = 500 * time.Millisecond // Fast polling for responsive dispatch
+	checkInterval          = 10 * time.Second       // Watch mode check interval
+	defaultTimeout         = 30 * time.Minute       // Default timeout for dispatch operations
+	defaultTerraformBinary = "terraform"
 )
 
 // Work unit type constants
@@ -27,6 +35,21 @@ const (
 	WorkUnitTypeInstruction = "instruction"
 	WorkUnitTypeReport      = "report"
 )
+
+// Dispatch type constants
+const (
+	DispatchTypeDirect        = "direct"
+	DispatchTypeInRepo        = "in-repo"
+	DispatchTypeRepoIsolation = "repo-isolation"
+)
+
+// Exponential backoff levels for logging inactivity
+var backoffLevels = []time.Duration{
+	30 * time.Second,
+	5 * time.Minute,
+	1 * time.Hour,
+	24 * time.Hour,
+}
 
 // Instruction represents the JSON structure for work instructions
 type Instruction struct {
@@ -45,18 +68,32 @@ type Report struct {
 	Date      string `json:"date,omitempty"`      // For dated reports
 }
 
+// Dispatch represents the JSON structure for dispatch work units (watch mode)
+type Dispatch struct {
+	Type            string            `json:"type"`                      // "direct", "in-repo", or "repo-isolation"
+	Instruction     string            `json:"instruction"`               // The instruction to dispatch
+	Mode            string            `json:"mode,omitempty"`            // "prompt" or "execute" (default: "execute")
+	Agent           string            `json:"agent,omitempty"`           // Optional agent override
+	TargetRepo      string            `json:"target_repo,omitempty"`     // For in-repo/repo-isolation: "owner/repo"
+	PRTitle         string            `json:"pr_title,omitempty"`        // For in-repo/repo-isolation: optional PR title
+	PRBody          string            `json:"pr_body,omitempty"`         // For in-repo/repo-isolation: optional PR body
+	IsolationName   string            `json:"isolation_name,omitempty"`  // For repo-isolation: name of isolation repo to create
+	Timestamp       string            `json:"timestamp,omitempty"`
+	Metadata        map[string]string `json:"metadata,omitempty"` // Additional metadata
+}
+
 // DispatchResult represents the result of a dispatched work unit
 type DispatchResult struct {
-	WorkUnitID   string            `json:"work_unit_id"`
-	OutputPath   string            `json:"output_path"`
-	Success      bool              `json:"success"`
-	ExitCode     int               `json:"exit_code"`
-	StartTime    time.Time         `json:"start_time"`
-	EndTime      time.Time         `json:"end_time"`
-	Duration     time.Duration     `json:"duration"`
-	ProcessedMD  string            `json:"processed_md,omitempty"`
-	OutputFiles  []string          `json:"output_files,omitempty"`
-	Error        string            `json:"error,omitempty"`
+	WorkUnitID  string        `json:"work_unit_id"`
+	OutputPath  string        `json:"output_path"`
+	Success     bool          `json:"success"`
+	ExitCode    int           `json:"exit_code"`
+	StartTime   time.Time     `json:"start_time"`
+	EndTime     time.Time     `json:"end_time"`
+	Duration    time.Duration `json:"duration"`
+	ProcessedMD string        `json:"processed_md,omitempty"`
+	OutputFiles []string      `json:"output_files,omitempty"`
+	Error       string        `json:"error,omitempty"`
 }
 
 // DispatchRecord records a dispatch operation for persistence
@@ -74,12 +111,40 @@ type DispatchRecord struct {
 	Error        string `json:"error,omitempty"`
 }
 
+// DispatchUnit represents a discovered dispatch work unit (watch mode)
+type DispatchUnit struct {
+	Path     string
+	ID       string
+	Dispatch *Dispatch
+}
+
+// FlowRecord holds metadata for tracked terraform flows
+type FlowRecord struct {
+	DispatcherID string `json:"dispatcher_id"`
+	FlowID       string `json:"flow_id"`
+	DispatchType string `json:"dispatch_type"`
+	DispatchPath string `json:"dispatch_path"`
+	TFConfigDir  string `json:"tf_config_dir,omitempty"`
+	StartTime    string `json:"start_time"`
+	EndTime      string `json:"end_time,omitempty"`
+	Status       string `json:"status"` // "pending", "running", "completed", "failed"
+	Error        string `json:"error,omitempty"`
+	PRUrl        string `json:"pr_url,omitempty"`
+}
+
 // Dispatcher manages dispatching work units and collecting results
 type Dispatcher struct {
-	dispatcherID string
-	inputDir     string
-	outputDir    string
-	recordsDir   string
+	dispatcherID    string
+	inputDir        string
+	outputDir       string
+	recordsDir      string
+	dispatcherLive  string
+	terraformBinary string
+	githubPAT       string
+	lastActivity    time.Time
+	backoffIndex    int
+	nextBackoffLog  time.Time
+	prPoller        *prpoller.Poller // centralized PR comment poller
 }
 
 // NewDispatcher creates a new dispatcher instance
@@ -99,14 +164,53 @@ func NewDispatcher() *Dispatcher {
 		recordsDir = defaultRecordsDir
 	}
 
+	dispatcherLive := os.Getenv("DISPATCHER_LIVE")
+	if dispatcherLive == "" {
+		dispatcherLive = defaultDispatcherLive
+	}
+
+	terraformBinary := os.Getenv("TERRAFORM_BINARY")
+	if terraformBinary == "" {
+		terraformBinary = defaultTerraformBinary
+	}
+
+	githubPAT := os.Getenv("GITHUB_PAT")
+	if githubPAT == "" {
+		githubPAT = os.Getenv("GH_TOKEN")
+	}
+
+	now := time.Now()
 	dispatcherID := uuid.New().String()[:8]
 
-	return &Dispatcher{
-		dispatcherID: dispatcherID,
-		inputDir:     inputDir,
-		outputDir:    outputDir,
-		recordsDir:   recordsDir,
+	d := &Dispatcher{
+		dispatcherID:    dispatcherID,
+		inputDir:        inputDir,
+		outputDir:       outputDir,
+		recordsDir:      recordsDir,
+		dispatcherLive:  dispatcherLive,
+		terraformBinary: terraformBinary,
+		githubPAT:       githubPAT,
+		lastActivity:    now,
+		backoffIndex:    0,
+		nextBackoffLog:  now.Add(backoffLevels[0]),
 	}
+
+	// Initialize the PR poller for monitoring active flows
+	if githubPAT != "" {
+		d.prPoller = prpoller.NewPoller(prpoller.Config{
+			Interval: 30 * time.Second,
+			Token:    githubPAT,
+			OnChange: func(event prpoller.ChangeEvent) {
+				log.Printf("[%s] PR activity detected on %s/%s#%d: %d new comment(s)",
+					dispatcherID, event.PR.Owner, event.PR.Repo, event.PR.Number, len(event.NewComments))
+				for _, c := range event.NewComments {
+					log.Printf("[%s]   - @%s: %.80s", dispatcherID, c.Author, c.Body)
+				}
+			},
+		})
+	}
+
+	return d
 }
 
 // ensureDirectories creates necessary directories
@@ -116,6 +220,9 @@ func (d *Dispatcher) ensureDirectories() error {
 		filepath.Join(d.outputDir, "content"),
 		filepath.Join(d.outputDir, "records"),
 		filepath.Join(d.recordsDir, "dispatch"),
+		filepath.Join(d.recordsDir, "dispatch-watch"),
+		filepath.Join(d.dispatcherLive, "flows", "in-repo"),
+		filepath.Join(d.dispatcherLive, "flows", "repo-isolation"),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -131,6 +238,17 @@ func generateWorkUnitID(prefix string) string {
 	shortID := uuid.New().String()[:8]
 	return fmt.Sprintf("%s_%s_%s", prefix, timestamp, shortID)
 }
+
+// generateFlowID creates a unique flow identifier
+func generateFlowID(dispatchType string) string {
+	timestamp := time.Now().Format("2006-01-02_15-04-05")
+	shortID := uuid.New().String()[:8]
+	return fmt.Sprintf("%s_%s_%s", dispatchType, timestamp, shortID)
+}
+
+// =====================================================================
+// Single-shot dispatch mode (--once)
+// =====================================================================
 
 // DispatchInstruction creates an instruction work unit and waits for completion
 func (d *Dispatcher) DispatchInstruction(instruction string, mode string, agent string, timeout time.Duration) (*DispatchResult, error) {
@@ -164,12 +282,12 @@ func (d *Dispatcher) DispatchInstruction(instruction string, mode string, agent 
 	result, err := d.waitForCompletion(workUnitID, startTime, timeout)
 	if err != nil {
 		// Record the failed dispatch
-		d.writeDispatchRecord(workUnitID, WorkUnitTypeInstruction, startTime, time.Now(), "", false, 0, err.Error())
+		d.writeDispatchRecordOnce(workUnitID, WorkUnitTypeInstruction, startTime, time.Now(), "", false, 0, err.Error())
 		return nil, err
 	}
 
 	// Record successful dispatch
-	d.writeDispatchRecord(workUnitID, WorkUnitTypeInstruction, startTime, result.EndTime, result.OutputPath, result.Success, result.ExitCode, "")
+	d.writeDispatchRecordOnce(workUnitID, WorkUnitTypeInstruction, startTime, result.EndTime, result.OutputPath, result.Success, result.ExitCode, "")
 
 	return result, nil
 }
@@ -208,11 +326,11 @@ func (d *Dispatcher) DispatchReport(reportType string, content string, agent str
 	// Wait for completion
 	result, err := d.waitForCompletion(workUnitID, startTime, timeout)
 	if err != nil {
-		d.writeDispatchRecord(workUnitID, WorkUnitTypeReport, startTime, time.Now(), "", false, 0, err.Error())
+		d.writeDispatchRecordOnce(workUnitID, WorkUnitTypeReport, startTime, time.Now(), "", false, 0, err.Error())
 		return nil, err
 	}
 
-	d.writeDispatchRecord(workUnitID, WorkUnitTypeReport, startTime, result.EndTime, result.OutputPath, result.Success, result.ExitCode, "")
+	d.writeDispatchRecordOnce(workUnitID, WorkUnitTypeReport, startTime, result.EndTime, result.OutputPath, result.Success, result.ExitCode, "")
 
 	return result, nil
 }
@@ -340,8 +458,8 @@ func (d *Dispatcher) collectResult(workUnitID string, outputPath string, startTi
 	return result, nil
 }
 
-// writeDispatchRecord writes a record of the dispatch operation
-func (d *Dispatcher) writeDispatchRecord(workUnitID string, workUnitType string, startTime, endTime time.Time, outputPath string, success bool, exitCode int, errMsg string) {
+// writeDispatchRecordOnce writes a record of the single-shot dispatch operation
+func (d *Dispatcher) writeDispatchRecordOnce(workUnitID string, workUnitType string, startTime, endTime time.Time, outputPath string, success bool, exitCode int, errMsg string) {
 	record := DispatchRecord{
 		DispatcherID: d.dispatcherID,
 		WorkUnitID:   workUnitID,
@@ -482,117 +600,927 @@ func (d *Dispatcher) WaitForCompletion(workUnitID string, timeout time.Duration)
 	return d.waitForCompletion(workUnitID, startTime, timeout)
 }
 
-func main() {
-	// CLI flags
-	instructionFlag := flag.String("i", "", "Instruction to dispatch")
-	reportFlag := flag.String("r", "", "Report type to dispatch (custom, daily, weekly, monthly)")
-	contentFlag := flag.String("c", "", "Content for custom reports")
-	modeFlag := flag.String("m", "prompt", "Mode for instructions (prompt or execute)")
-	agentFlag := flag.String("a", "", "Agent to use (optional)")
-	timeoutFlag := flag.Duration("t", defaultTimeout, "Timeout for dispatch operation")
-	asyncFlag := flag.Bool("async", false, "Dispatch asynchronously (don't wait for completion)")
-	checkFlag := flag.String("check", "", "Check status of a work unit by ID")
-	waitFlag := flag.String("wait", "", "Wait for a work unit to complete by ID")
+// =====================================================================
+// Watch mode (default behavior)
+// =====================================================================
 
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "agent-dispatch: Dispatch work units to agent workers\n\n")
-		fmt.Fprintf(os.Stderr, "Usage:\n")
-		fmt.Fprintf(os.Stderr, "  agent-dispatch -i \"instruction\" [-m mode] [-a agent] [-t timeout] [--async]\n")
-		fmt.Fprintf(os.Stderr, "  agent-dispatch -r type [-c content] [-a agent] [-t timeout] [--async]\n")
-		fmt.Fprintf(os.Stderr, "  agent-dispatch --check <work-unit-id>\n")
-		fmt.Fprintf(os.Stderr, "  agent-dispatch --wait <work-unit-id> [-t timeout]\n\n")
-		fmt.Fprintf(os.Stderr, "Environment Variables:\n")
-		fmt.Fprintf(os.Stderr, "  INPUT_DIR    Input directory (default: %s)\n", defaultInputDir)
-		fmt.Fprintf(os.Stderr, "  OUTPUT_DIR   Output directory (default: %s)\n", defaultOutputDir)
-		fmt.Fprintf(os.Stderr, "  RECORDS_DIR  Records directory (default: %s)\n\n", defaultRecordsDir)
-		fmt.Fprintf(os.Stderr, "Flags:\n")
-		flag.PrintDefaults()
-	}
-
-	flag.Parse()
-
-	dispatcher := NewDispatcher()
-
-	if err := dispatcher.ensureDirectories(); err != nil {
-		log.Fatalf("Failed to ensure directories: %v", err)
-	}
-
-	// Handle check status
-	if *checkFlag != "" {
-		result, completed, err := dispatcher.CheckStatus(*checkFlag)
-		if err != nil {
-			log.Fatalf("Error checking status: %v", err)
+// checkForDispatchUnits scans the input directory for DISPATCH.json/md files
+func (d *Dispatcher) checkForDispatchUnits() ([]DispatchUnit, error) {
+	anyDir := filepath.Join(d.inputDir, "any")
+	entries, err := os.ReadDir(anyDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
 		}
-		if !completed {
-			fmt.Printf("Work unit %s is still pending or in progress\n", *checkFlag)
-			os.Exit(1)
-		}
-		printResult(result)
-		return
+		return nil, err
 	}
 
-	// Handle wait for completion
-	if *waitFlag != "" {
-		log.Printf("[%s] Waiting for work unit: %s", dispatcher.dispatcherID, *waitFlag)
-		result, err := dispatcher.WaitForCompletion(*waitFlag, *timeoutFlag)
-		if err != nil {
-			log.Fatalf("Error waiting for completion: %v", err)
-		}
-		printResult(result)
-		return
-	}
+	var dispatchUnits []DispatchUnit
+	for _, entry := range entries {
+		if entry.IsDir() {
+			folderPath := filepath.Join(anyDir, entry.Name())
 
-	// Handle instruction dispatch
-	if *instructionFlag != "" {
-		if *asyncFlag {
-			workUnitID, err := dispatcher.DispatchInstructionAsync(*instructionFlag, *modeFlag, *agentFlag)
-			if err != nil {
-				log.Fatalf("Failed to dispatch instruction: %v", err)
+			// Skip if already being dispatched
+			dispatchingMD := filepath.Join(folderPath, "DISPATCHING.md")
+			if _, err := os.Stat(dispatchingMD); err == nil {
+				continue
 			}
-			fmt.Printf("Dispatched work unit: %s\n", workUnitID)
-			fmt.Printf("Check status with: agent-dispatch --check %s\n", workUnitID)
-			fmt.Printf("Wait for completion with: agent-dispatch --wait %s\n", workUnitID)
+
+			// Check for DISPATCH.json or DISPATCH.md
+			dispatchJSON := filepath.Join(folderPath, "DISPATCH.json")
+			dispatchMD := filepath.Join(folderPath, "DISPATCH.md")
+
+			_, jsonExists := os.Stat(dispatchJSON)
+			_, mdExists := os.Stat(dispatchMD)
+
+			if jsonExists == nil || mdExists == nil {
+				dispatch, err := d.handleDispatchFiles(folderPath)
+				if err != nil {
+					log.Printf("[%s] Error handling dispatch files in %s: %v", d.dispatcherID, entry.Name(), err)
+					continue
+				}
+				dispatchUnits = append(dispatchUnits, DispatchUnit{
+					Path:     folderPath,
+					ID:       entry.Name(),
+					Dispatch: dispatch,
+				})
+			}
+		}
+	}
+
+	return dispatchUnits, nil
+}
+
+// handleDispatchFiles processes DISPATCH.json/md files, converting .md to .json if needed
+func (d *Dispatcher) handleDispatchFiles(folderPath string) (*Dispatch, error) {
+	dispatchJSON := filepath.Join(folderPath, "DISPATCH.json")
+	dispatchMD := filepath.Join(folderPath, "DISPATCH.md")
+
+	_, jsonExists := os.Stat(dispatchJSON)
+	_, mdExists := os.Stat(dispatchMD)
+
+	// If DISPATCH.json exists, use it (takes precedence)
+	if jsonExists == nil {
+		// Delete DISPATCH.md if it exists (to show it was ignored)
+		if mdExists == nil {
+			if err := os.Remove(dispatchMD); err != nil {
+				log.Printf("Warning: failed to remove DISPATCH.md: %v", err)
+			}
+		}
+
+		// Read and parse the JSON
+		data, err := os.ReadFile(dispatchJSON)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read DISPATCH.json: %w", err)
+		}
+
+		var dispatch Dispatch
+		if err := json.Unmarshal(data, &dispatch); err != nil {
+			return nil, fmt.Errorf("failed to parse DISPATCH.json: %w", err)
+		}
+
+		// Validate type
+		if dispatch.Type != DispatchTypeDirect && dispatch.Type != DispatchTypeInRepo && dispatch.Type != DispatchTypeRepoIsolation {
+			return nil, fmt.Errorf("invalid dispatch type: %s (must be 'direct', 'in-repo', or 'repo-isolation')", dispatch.Type)
+		}
+
+		// Default mode to execute
+		if dispatch.Mode == "" {
+			dispatch.Mode = "execute"
+		}
+
+		return &dispatch, nil
+	}
+
+	// If only DISPATCH.md exists, convert it to DISPATCH.json with type "direct"
+	if mdExists == nil {
+		// Read the markdown content
+		mdContent, err := os.ReadFile(dispatchMD)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read DISPATCH.md: %w", err)
+		}
+
+		// Create the dispatch struct with type "direct" (auto-transform behavior)
+		dispatch := Dispatch{
+			Type:        DispatchTypeDirect,
+			Instruction: string(mdContent),
+			Mode:        "execute", // Default to execute mode
+			Timestamp:   time.Now().Format(time.RFC3339),
+		}
+
+		// Write the JSON file
+		jsonData, err := json.MarshalIndent(dispatch, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal DISPATCH.json: %w", err)
+		}
+
+		if err := os.WriteFile(dispatchJSON, jsonData, 0644); err != nil {
+			return nil, fmt.Errorf("failed to write DISPATCH.json: %w", err)
+		}
+
+		// Remove the original DISPATCH.md (it's been converted)
+		if err := os.Remove(dispatchMD); err != nil {
+			log.Printf("Warning: failed to remove DISPATCH.md after conversion: %v", err)
+		}
+
+		log.Printf("[%s] Converted DISPATCH.md to DISPATCH.json (type: direct)", d.dispatcherID)
+		return &dispatch, nil
+	}
+
+	return nil, fmt.Errorf("no dispatch file found")
+}
+
+// processDispatchUnit handles a single dispatch work unit
+func (d *Dispatcher) processDispatchUnit(unit DispatchUnit) error {
+	log.Printf("[%s] Processing dispatch unit: %s (type: %s)", d.dispatcherID, unit.ID, unit.Dispatch.Type)
+
+	startTime := time.Now()
+
+	// Create DISPATCHING.md to mark we're working on it
+	dispatchingMD := filepath.Join(unit.Path, "DISPATCHING.md")
+	dispatchingContent := fmt.Sprintf("# Dispatching\n\nWatcher ID: %s\nStarted: %s\nType: %s\n",
+		d.dispatcherID, startTime.Format(time.RFC3339), unit.Dispatch.Type)
+	if err := os.WriteFile(dispatchingMD, []byte(dispatchingContent), 0644); err != nil {
+		return fmt.Errorf("failed to create DISPATCHING.md: %w", err)
+	}
+
+	var err error
+	switch unit.Dispatch.Type {
+	case DispatchTypeDirect:
+		err = d.processDirectDispatch(unit)
+	case DispatchTypeInRepo:
+		err = d.processInRepoDispatch(unit)
+	case DispatchTypeRepoIsolation:
+		err = d.processRepoIsolationDispatch(unit)
+	default:
+		err = fmt.Errorf("unsupported dispatch type: %s", unit.Dispatch.Type)
+	}
+
+	endTime := time.Now()
+	duration := endTime.Sub(startTime)
+
+	if err != nil {
+		// Mark as failed
+		d.markDispatchFailed(unit, err, startTime, endTime)
+		return err
+	}
+
+	// Mark as completed and move to output
+	d.markDispatchComplete(unit, startTime, endTime)
+
+	log.Printf("[%s] Completed dispatch unit: %s (duration: %s)", d.dispatcherID, unit.ID, duration.Round(time.Millisecond))
+	return nil
+}
+
+// processDirectDispatch handles direct dispatch (creates INSTRUCTION.json in-place)
+func (d *Dispatcher) processDirectDispatch(unit DispatchUnit) error {
+	log.Printf("[%s] Processing direct dispatch: %s", d.dispatcherID, unit.ID)
+
+	// For direct dispatch, we transform the dispatch into an instruction
+	// and let the agent-worker pick it up from the same location
+
+	inst := Instruction{
+		Instruction: unit.Dispatch.Instruction,
+		Mode:        unit.Dispatch.Mode,
+		Agent:       unit.Dispatch.Agent,
+		Timestamp:   time.Now().Format(time.RFC3339),
+	}
+
+	instData, err := json.MarshalIndent(inst, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal instruction: %w", err)
+	}
+
+	// Write INSTRUCTION.json to the same folder
+	instPath := filepath.Join(unit.Path, "INSTRUCTION.json")
+	if err := os.WriteFile(instPath, instData, 0644); err != nil {
+		return fmt.Errorf("failed to write INSTRUCTION.json: %w", err)
+	}
+
+	// Remove DISPATCH.json and DISPATCHING.md so worker picks up the INSTRUCTION
+	os.Remove(filepath.Join(unit.Path, "DISPATCH.json"))
+	os.Remove(filepath.Join(unit.Path, "DISPATCHING.md"))
+
+	log.Printf("[%s] Direct dispatch transformed to INSTRUCTION.json, ready for worker pickup", d.dispatcherID)
+	return nil
+}
+
+// processInRepoDispatch handles in-repo dispatch with terraform lifecycle
+func (d *Dispatcher) processInRepoDispatch(unit DispatchUnit) error {
+	log.Printf("[%s] Processing in-repo dispatch: %s", d.dispatcherID, unit.ID)
+
+	if d.githubPAT == "" {
+		return fmt.Errorf("GITHUB_PAT or GH_TOKEN environment variable is required for in-repo dispatch")
+	}
+
+	targetRepo := unit.Dispatch.TargetRepo
+	if targetRepo == "" {
+		targetRepo = "je-sidestuff/AI-sandboxing" // Default
+	}
+
+	// Generate a unique flow ID
+	flowID := generateFlowID(DispatchTypeInRepo)
+
+	// Create the terraform config directory
+	tfConfigDir := filepath.Join(d.dispatcherLive, "flows", "in-repo", flowID)
+	if err := os.MkdirAll(tfConfigDir, 0755); err != nil {
+		return fmt.Errorf("failed to create terraform config directory: %w", err)
+	}
+
+	// Write the flow record
+	flowRecord := FlowRecord{
+		DispatcherID: d.dispatcherID,
+		FlowID:       flowID,
+		DispatchType: DispatchTypeInRepo,
+		DispatchPath: unit.Path,
+		TFConfigDir:  tfConfigDir,
+		StartTime:    time.Now().Format(time.RFC3339),
+		Status:       "running",
+	}
+	d.writeFlowRecord(flowRecord)
+
+	// Create the terraform configuration
+	if err := d.createInRepoTerraformConfig(tfConfigDir, flowID, targetRepo, unit.Dispatch); err != nil {
+		flowRecord.Status = "failed"
+		flowRecord.Error = err.Error()
+		flowRecord.EndTime = time.Now().Format(time.RFC3339)
+		d.writeFlowRecord(flowRecord)
+		return fmt.Errorf("failed to create terraform config: %w", err)
+	}
+
+	// Run terraform init
+	log.Printf("[%s] Running terraform init in %s", d.dispatcherID, tfConfigDir)
+	if err := d.runTerraform(tfConfigDir, "init"); err != nil {
+		flowRecord.Status = "failed"
+		flowRecord.Error = fmt.Sprintf("terraform init failed: %v", err)
+		flowRecord.EndTime = time.Now().Format(time.RFC3339)
+		d.writeFlowRecord(flowRecord)
+		return fmt.Errorf("terraform init failed: %w", err)
+	}
+
+	// Run terraform apply
+	log.Printf("[%s] Running terraform apply in %s", d.dispatcherID, tfConfigDir)
+	if err := d.runTerraform(tfConfigDir, "apply", "-auto-approve"); err != nil {
+		flowRecord.Status = "failed"
+		flowRecord.Error = fmt.Sprintf("terraform apply failed: %v", err)
+		flowRecord.EndTime = time.Now().Format(time.RFC3339)
+		d.writeFlowRecord(flowRecord)
+		return fmt.Errorf("terraform apply failed: %w", err)
+	}
+
+	// Terraform lifecycle is complete - PR has been created and work dispatched
+	// Mark the flow as complete
+	flowRecord.Status = "completed"
+	flowRecord.EndTime = time.Now().Format(time.RFC3339)
+
+	// Try to get PR URL from terraform output
+	prURL, _ := d.getTerraformOutput(tfConfigDir, "pr_url")
+	if prURL != "" {
+		flowRecord.PRUrl = prURL
+		log.Printf("[%s] In-repo dispatch complete, PR URL: %s", d.dispatcherID, prURL)
+	}
+
+	d.writeFlowRecord(flowRecord)
+
+	log.Printf("[%s] In-repo dispatch terraform lifecycle complete for flow %s", d.dispatcherID, flowID)
+	return nil
+}
+
+// processRepoIsolationDispatch handles repo-isolation dispatch with terraform lifecycle
+// This creates a completely separate private repository for the AI to work in
+func (d *Dispatcher) processRepoIsolationDispatch(unit DispatchUnit) error {
+	log.Printf("[%s] Processing repo-isolation dispatch: %s", d.dispatcherID, unit.ID)
+
+	if d.githubPAT == "" {
+		return fmt.Errorf("GITHUB_PAT or GH_TOKEN environment variable is required for repo-isolation dispatch")
+	}
+
+	targetRepo := unit.Dispatch.TargetRepo
+	if targetRepo == "" {
+		targetRepo = "je-sidestuff/AI-sandboxing" // Default
+	}
+
+	// Generate isolation repo name if not specified
+	isolationName := unit.Dispatch.IsolationName
+	if isolationName == "" {
+		// Generate a unique name based on flow ID
+		timestamp := time.Now().Format("20060102-150405")
+		shortID := uuid.New().String()[:8]
+		isolationName = fmt.Sprintf("ai-isolation-%s-%s", timestamp, shortID)
+	}
+
+	// Generate a unique flow ID
+	flowID := generateFlowID(DispatchTypeRepoIsolation)
+
+	// Create the terraform config directory
+	tfConfigDir := filepath.Join(d.dispatcherLive, "flows", "repo-isolation", flowID)
+	if err := os.MkdirAll(tfConfigDir, 0755); err != nil {
+		return fmt.Errorf("failed to create terraform config directory: %w", err)
+	}
+
+	// Write the flow record
+	flowRecord := FlowRecord{
+		DispatcherID: d.dispatcherID,
+		FlowID:       flowID,
+		DispatchType: DispatchTypeRepoIsolation,
+		DispatchPath: unit.Path,
+		TFConfigDir:  tfConfigDir,
+		StartTime:    time.Now().Format(time.RFC3339),
+		Status:       "running",
+	}
+	d.writeFlowRecord(flowRecord)
+
+	// Create the terraform configuration
+	if err := d.createRepoIsolationTerraformConfig(tfConfigDir, flowID, targetRepo, isolationName, unit.Dispatch); err != nil {
+		flowRecord.Status = "failed"
+		flowRecord.Error = err.Error()
+		flowRecord.EndTime = time.Now().Format(time.RFC3339)
+		d.writeFlowRecord(flowRecord)
+		return fmt.Errorf("failed to create terraform config: %w", err)
+	}
+
+	// Run terraform init
+	log.Printf("[%s] Running terraform init in %s", d.dispatcherID, tfConfigDir)
+	if err := d.runTerraform(tfConfigDir, "init"); err != nil {
+		flowRecord.Status = "failed"
+		flowRecord.Error = fmt.Sprintf("terraform init failed: %v", err)
+		flowRecord.EndTime = time.Now().Format(time.RFC3339)
+		d.writeFlowRecord(flowRecord)
+		return fmt.Errorf("terraform init failed: %w", err)
+	}
+
+	// Run terraform apply
+	log.Printf("[%s] Running terraform apply in %s", d.dispatcherID, tfConfigDir)
+	if err := d.runTerraform(tfConfigDir, "apply", "-auto-approve"); err != nil {
+		flowRecord.Status = "failed"
+		flowRecord.Error = fmt.Sprintf("terraform apply failed: %v", err)
+		flowRecord.EndTime = time.Now().Format(time.RFC3339)
+		d.writeFlowRecord(flowRecord)
+		return fmt.Errorf("terraform apply failed: %w", err)
+	}
+
+	// Terraform lifecycle is complete - isolation repo has been created and work dispatched
+	flowRecord.Status = "completed"
+	flowRecord.EndTime = time.Now().Format(time.RFC3339)
+
+	// Try to get branch name from terraform output (repo-isolation outputs this)
+	branchName, _ := d.getTerraformOutput(tfConfigDir, "branch_name")
+	if branchName != "" {
+		log.Printf("[%s] Repo-isolation dispatch complete, isolation repo: %s, branch: %s", d.dispatcherID, isolationName, branchName)
+	}
+
+	// Get the PR URL and register for monitoring
+	prURL, _ := d.getTerraformOutput(tfConfigDir, "pr_url")
+	if prURL != "" {
+		flowRecord.PRUrl = prURL
+		log.Printf("[%s] Containment PR: %s", d.dispatcherID, prURL)
+
+		// Register the PR for monitoring with the poller
+		if d.prPoller != nil {
+			repoFullName, _ := d.getTerraformOutput(tfConfigDir, "isolation_repo_full_name")
+			prNumberStr, _ := d.getTerraformOutput(tfConfigDir, "pr_number")
+
+			if repoFullName != "" && prNumberStr != "" {
+				var prNumber int
+				fmt.Sscanf(prNumberStr, "%d", &prNumber)
+
+				parts := strings.SplitN(repoFullName, "/", 2)
+				if len(parts) == 2 && prNumber > 0 {
+					owner, repo := parts[0], parts[1]
+					d.prPoller.Register(prpoller.PRRegistration{
+						Owner:  owner,
+						Repo:   repo,
+						Number: prNumber,
+						TerraformAction: &prpoller.TerraformAction{
+							WorkDir:     tfConfigDir,
+							Description: fmt.Sprintf("revision for flow %s", flowID),
+						},
+						OnChange: func(event prpoller.ChangeEvent) {
+							log.Printf("[%s] Detected %d new comment(s) on %s - triggering terraform apply",
+								d.dispatcherID, len(event.NewComments), prURL)
+						},
+					})
+					log.Printf("[%s] Registered PR %s/%s#%d for comment monitoring", d.dispatcherID, owner, repo, prNumber)
+				}
+			}
+		}
+	}
+
+	d.writeFlowRecord(flowRecord)
+
+	log.Printf("[%s] Repo-isolation dispatch terraform lifecycle complete for flow %s", d.dispatcherID, flowID)
+	return nil
+}
+
+// createRepoIsolationTerraformConfig creates the terraform configuration for repo-isolation dispatch
+func (d *Dispatcher) createRepoIsolationTerraformConfig(configDir, flowID, targetRepo, isolationName string, dispatch *Dispatch) error {
+	// Get the path to the repo-isolation module
+	exe, err := os.Executable()
+	var modulePath string
+	if err == nil {
+		modulePath = filepath.Join(filepath.Dir(exe), "modules", "containment", "repo-isolation")
+		if _, err := os.Stat(modulePath); err != nil {
+			// Try from CWD
+			cwd, _ := os.Getwd()
+			modulePath = filepath.Join(cwd, "agent-dispatch", "modules", "containment", "repo-isolation")
+		}
+	}
+
+	// Default to absolute path if nothing works
+	if modulePath == "" || !fileExists(modulePath) {
+		modulePath = "/workspaces/workspace/sandbox/AI-sandboxing/agent-dispatch/modules/containment/repo-isolation"
+	}
+
+	// Create providers.tf
+	providersTF := `terraform {
+  required_providers {
+    github = {
+      source  = "integrations/github"
+      version = "~> 6.0"
+    }
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.9"
+    }
+  }
+}
+
+provider "github" {
+  token = var.github_pat
+}
+`
+
+	// Create variables.tf
+	variablesTF := `variable "github_pat" {
+  description = "GitHub Personal Access Token"
+  type        = string
+  sensitive   = true
+}
+`
+
+	// Create main.tf with module reference
+	mainTF := fmt.Sprintf(`module "repo_isolation_dispatch" {
+  source = "%s"
+
+  name                   = "%s"
+  dispatcher_name        = "%s"
+  github_pat             = var.github_pat
+  target_repo            = "%s"
+  slopspaces_working_dir = "/workspaces/slopspaces/working/"
+}
+`, modulePath, isolationName, flowID, targetRepo)
+
+	// Create outputs.tf
+	outputsTF := `output "isolation_repo_ssh_clone_url" {
+  value       = module.repo_isolation_dispatch.isolation_repo_ssh_clone_url
+  description = "The SSH clone URL of the isolation repository"
+}
+
+output "branch_name" {
+  value       = module.repo_isolation_dispatch.branch_name
+  description = "The name of the containment branch"
+}
+
+output "unix_timestamp" {
+  value       = module.repo_isolation_dispatch.unix_timestamp
+  description = "The unix timestamp for this dispatch"
+}
+
+output "dispatch_time" {
+  value       = module.repo_isolation_dispatch.dispatch_time
+  description = "The RFC3339 formatted time when this dispatch was created"
+}
+
+output "pr_url" {
+  value       = module.repo_isolation_dispatch.pr_url
+  description = "The URL of the containment PR for monitoring"
+}
+
+output "pr_number" {
+  value       = module.repo_isolation_dispatch.pr_number
+  description = "The PR number for the containment PR"
+}
+
+output "isolation_repo_full_name" {
+  value       = module.repo_isolation_dispatch.isolation_repo_full_name
+  description = "The full name (owner/repo) of the isolation repository"
+}
+`
+
+	// Create terraform.tfvars with the PAT
+	tfvarsTF := fmt.Sprintf(`github_pat = "%s"
+`, d.githubPAT)
+
+	// Write all the files
+	files := map[string]string{
+		"providers.tf":     providersTF,
+		"variables.tf":     variablesTF,
+		"main.tf":          mainTF,
+		"outputs.tf":       outputsTF,
+		"terraform.tfvars": tfvarsTF,
+	}
+
+	for filename, content := range files {
+		path := filepath.Join(configDir, filename)
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			return fmt.Errorf("failed to write %s: %w", filename, err)
+		}
+	}
+
+	// Also write a dispatch record to the config dir for reference
+	dispatchData, _ := json.MarshalIndent(dispatch, "", "  ")
+	if err := os.WriteFile(filepath.Join(configDir, "DISPATCH_RECORD.json"), dispatchData, 0644); err != nil {
+		log.Printf("Warning: failed to write dispatch record: %v", err)
+	}
+
+	return nil
+}
+
+// createInRepoTerraformConfig creates the terraform configuration for in-repo dispatch
+func (d *Dispatcher) createInRepoTerraformConfig(configDir, flowID, targetRepo string, dispatch *Dispatch) error {
+	// Get the path to the in-repo module
+	// Try relative to the executable first
+	exe, err := os.Executable()
+	var modulePath string
+	if err == nil {
+		modulePath = filepath.Join(filepath.Dir(exe), "modules", "containment", "in-repo")
+		if _, err := os.Stat(modulePath); err != nil {
+			// Try from CWD
+			cwd, _ := os.Getwd()
+			modulePath = filepath.Join(cwd, "agent-dispatch", "modules", "containment", "in-repo")
+		}
+	}
+
+	// Default to absolute path if nothing works
+	if modulePath == "" || !fileExists(modulePath) {
+		modulePath = "/workspaces/workspace/sandbox/AI-sandboxing/agent-dispatch/modules/containment/in-repo"
+	}
+
+	// Create providers.tf
+	providersTF := `terraform {
+  required_providers {
+    github = {
+      source  = "integrations/github"
+      version = "~> 6.0"
+    }
+  }
+}
+
+provider "github" {
+  token = var.github_pat
+}
+`
+
+	// Create variables.tf
+	variablesTF := `variable "github_pat" {
+  description = "GitHub Personal Access Token"
+  type        = string
+  sensitive   = true
+}
+`
+
+	// Create main.tf with module reference
+	mainTF := fmt.Sprintf(`module "in_repo_dispatch" {
+  source = "%s"
+
+  dispatcher_name       = "%s"
+  github_pat           = var.github_pat
+  target_repo          = "%s"
+  slopspaces_working_dir = "/workspaces/slopspaces/working/"
+}
+`, modulePath, flowID, targetRepo)
+
+	// Create outputs.tf
+	outputsTF := `output "pr_url" {
+  value       = module.in_repo_dispatch.pr_url
+  description = "The URL of the created pull request"
+}
+
+output "branch_name" {
+  value       = module.in_repo_dispatch.branch_name
+  description = "The name of the containment branch"
+}
+`
+
+	// Create terraform.tfvars with the PAT
+	tfvarsTF := fmt.Sprintf(`github_pat = "%s"
+`, d.githubPAT)
+
+	// Write all the files
+	files := map[string]string{
+		"providers.tf":     providersTF,
+		"variables.tf":     variablesTF,
+		"main.tf":          mainTF,
+		"outputs.tf":       outputsTF,
+		"terraform.tfvars": tfvarsTF,
+	}
+
+	for filename, content := range files {
+		path := filepath.Join(configDir, filename)
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			return fmt.Errorf("failed to write %s: %w", filename, err)
+		}
+	}
+
+	// Also write a dispatch record to the config dir for reference
+	dispatchData, _ := json.MarshalIndent(dispatch, "", "  ")
+	if err := os.WriteFile(filepath.Join(configDir, "DISPATCH_RECORD.json"), dispatchData, 0644); err != nil {
+		log.Printf("Warning: failed to write dispatch record: %v", err)
+	}
+
+	return nil
+}
+
+// runTerraform executes a terraform command in the given directory
+func (d *Dispatcher) runTerraform(workDir string, args ...string) error {
+	cmd := exec.Command(d.terraformBinary, args...)
+	cmd.Dir = workDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
+}
+
+// getTerraformOutput retrieves a terraform output value
+func (d *Dispatcher) getTerraformOutput(workDir, outputName string) (string, error) {
+	cmd := exec.Command(d.terraformBinary, "output", "-raw", outputName)
+	cmd.Dir = workDir
+
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(string(output)), nil
+}
+
+// markDispatchComplete marks a dispatch as complete and moves to output
+func (d *Dispatcher) markDispatchComplete(unit DispatchUnit, startTime, endTime time.Time) {
+	duration := endTime.Sub(startTime)
+
+	// For direct dispatch, the folder stays in place for worker pickup
+	// For in-repo dispatch, we move to output since terraform lifecycle is complete
+
+	if unit.Dispatch.Type == DispatchTypeInRepo {
+		// Move folder to output directory
+		destPath := filepath.Join(d.outputDir, unit.ID)
+		if err := os.Rename(unit.Path, destPath); err != nil {
+			log.Printf("[%s] Warning: failed to move dispatch to output: %v", d.dispatcherID, err)
 			return
 		}
 
-		log.Printf("[%s] Dispatching instruction (mode: %s, timeout: %s)", dispatcher.dispatcherID, *modeFlag, *timeoutFlag)
-		result, err := dispatcher.DispatchInstruction(*instructionFlag, *modeFlag, *agentFlag, *timeoutFlag)
-		if err != nil {
-			log.Fatalf("Dispatch failed: %v", err)
+		// Create DISPATCH_PROCESSED.md in the destination
+		processedMD := filepath.Join(destPath, "DISPATCH_PROCESSED.md")
+		processedContent := fmt.Sprintf("# Dispatch Processed\n\nWatcher ID: %s\nStarted: %s\nCompleted: %s\nDuration: %s\nType: %s\n",
+			d.dispatcherID, startTime.Format(time.RFC3339), endTime.Format(time.RFC3339),
+			duration.Round(time.Millisecond).String(), unit.Dispatch.Type)
+		if err := os.WriteFile(processedMD, []byte(processedContent), 0644); err != nil {
+			log.Printf("Warning: failed to create DISPATCH_PROCESSED.md: %v", err)
 		}
-		printResult(result)
+	}
+	// For direct dispatch, we don't move - we just transformed it for the worker
+
+	// Write dispatch record
+	d.writeDispatchRecordWatch(unit, startTime, endTime, true, "")
+}
+
+// markDispatchFailed marks a dispatch as failed
+func (d *Dispatcher) markDispatchFailed(unit DispatchUnit, dispatchErr error, startTime, endTime time.Time) {
+	duration := endTime.Sub(startTime)
+
+	// Move to output with error marker
+	destPath := filepath.Join(d.outputDir, unit.ID)
+	if err := os.Rename(unit.Path, destPath); err != nil {
+		log.Printf("[%s] Warning: failed to move failed dispatch to output: %v", d.dispatcherID, err)
+		destPath = unit.Path // Use original path for the error file
+	}
+
+	// Create DISPATCH_FAILED.md
+	failedMD := filepath.Join(destPath, "DISPATCH_FAILED.md")
+	failedContent := fmt.Sprintf("# Dispatch Failed\n\nWatcher ID: %s\nStarted: %s\nFailed: %s\nDuration: %s\nType: %s\nError: %s\n",
+		d.dispatcherID, startTime.Format(time.RFC3339), endTime.Format(time.RFC3339),
+		duration.Round(time.Millisecond).String(), unit.Dispatch.Type, dispatchErr.Error())
+	if err := os.WriteFile(failedMD, []byte(failedContent), 0644); err != nil {
+		log.Printf("Warning: failed to create DISPATCH_FAILED.md: %v", err)
+	}
+
+	// Write dispatch record
+	d.writeDispatchRecordWatch(unit, startTime, endTime, false, dispatchErr.Error())
+}
+
+// writeDispatchRecordWatch writes a record of the watch mode dispatch operation
+func (d *Dispatcher) writeDispatchRecordWatch(unit DispatchUnit, startTime, endTime time.Time, success bool, errMsg string) {
+	record := map[string]interface{}{
+		"watcher_id":    d.dispatcherID,
+		"dispatch_id":   unit.ID,
+		"dispatch_type": unit.Dispatch.Type,
+		"dispatch_path": unit.Path,
+		"start_time":    startTime.Format(time.RFC3339),
+		"end_time":      endTime.Format(time.RFC3339),
+		"duration_ms":   endTime.Sub(startTime).Milliseconds(),
+		"success":       success,
+	}
+	if errMsg != "" {
+		record["error"] = errMsg
+	}
+
+	recordData, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		log.Printf("[%s] Warning: failed to marshal dispatch record: %v", d.dispatcherID, err)
 		return
 	}
 
-	// Handle report dispatch
-	if *reportFlag != "" {
-		if *reportFlag == "custom" && *contentFlag == "" {
-			log.Fatalf("Custom reports require -c content flag")
-		}
+	recordFilename := fmt.Sprintf("%s_%s_%d.json", d.dispatcherID, unit.ID, time.Now().Unix())
+	recordPath := filepath.Join(d.recordsDir, "dispatch-watch", recordFilename)
 
-		if *asyncFlag {
-			workUnitID, err := dispatcher.DispatchReportAsync(*reportFlag, *contentFlag, *agentFlag)
-			if err != nil {
-				log.Fatalf("Failed to dispatch report: %v", err)
-			}
-			fmt.Printf("Dispatched work unit: %s\n", workUnitID)
-			fmt.Printf("Check status with: agent-dispatch --check %s\n", workUnitID)
-			fmt.Printf("Wait for completion with: agent-dispatch --wait %s\n", workUnitID)
+	if err := os.WriteFile(recordPath, recordData, 0644); err != nil {
+		log.Printf("[%s] Warning: failed to write dispatch record: %v", d.dispatcherID, err)
+	}
+}
+
+// writeFlowRecord writes a flow tracking record
+func (d *Dispatcher) writeFlowRecord(record FlowRecord) {
+	recordData, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		log.Printf("[%s] Warning: failed to marshal flow record: %v", d.dispatcherID, err)
+		return
+	}
+
+	recordFilename := fmt.Sprintf("flow_%s.json", record.FlowID)
+	recordPath := filepath.Join(d.recordsDir, "dispatch-watch", recordFilename)
+
+	if err := os.WriteFile(recordPath, recordData, 0644); err != nil {
+		log.Printf("[%s] Warning: failed to write flow record: %v", d.dispatcherID, err)
+	}
+}
+
+// fileExists checks if a file or directory exists
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// runWatchLoop is the main watch loop
+func (d *Dispatcher) runWatchLoop() {
+	log.Printf("[%s] Dispatch watcher started", d.dispatcherID)
+	log.Printf("[%s] Watching: %s", d.dispatcherID, filepath.Join(d.inputDir, "any"))
+	log.Printf("[%s] Output: %s", d.dispatcherID, d.outputDir)
+	log.Printf("[%s] Records: %s", d.dispatcherID, filepath.Join(d.recordsDir, "dispatch-watch"))
+	log.Printf("[%s] Dispatcher Live: %s", d.dispatcherID, d.dispatcherLive)
+
+	if d.githubPAT != "" {
+		log.Printf("[%s] GitHub PAT: configured (in-repo dispatch enabled)", d.dispatcherID)
+	} else {
+		log.Printf("[%s] GitHub PAT: not configured (in-repo dispatch will fail)", d.dispatcherID)
+	}
+
+	// Start the PR poller if configured
+	if d.prPoller != nil {
+		log.Printf("[%s] Starting PR comment poller (30s interval)", d.dispatcherID)
+		d.prPoller.Start()
+
+		// Re-register any existing flows from disk
+		d.reregisterActiveFlows()
+	}
+
+	// Set up graceful shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	// Create a done channel for the main loop
+	done := make(chan struct{})
+
+	go func() {
+		<-sigCh
+		log.Printf("[%s] Shutdown signal received, stopping...", d.dispatcherID)
+		if d.prPoller != nil {
+			d.prPoller.Stop()
+		}
+		close(done)
+	}()
+
+	for {
+		select {
+		case <-done:
+			log.Printf("[%s] Dispatcher stopped", d.dispatcherID)
 			return
+		default:
 		}
 
-		log.Printf("[%s] Dispatching report (type: %s, timeout: %s)", dispatcher.dispatcherID, *reportFlag, *timeoutFlag)
-		result, err := dispatcher.DispatchReport(*reportFlag, *contentFlag, *agentFlag, *timeoutFlag)
+		dispatchUnits, err := d.checkForDispatchUnits()
 		if err != nil {
-			log.Fatalf("Dispatch failed: %v", err)
+			log.Printf("[%s] Error checking for dispatch units: %v", d.dispatcherID, err)
 		}
-		printResult(result)
+
+		if len(dispatchUnits) > 0 {
+			// Reset backoff on activity
+			d.lastActivity = time.Now()
+			d.backoffIndex = 0
+			d.nextBackoffLog = d.lastActivity.Add(backoffLevels[0])
+
+			for _, unit := range dispatchUnits {
+				if err := d.processDispatchUnit(unit); err != nil {
+					log.Printf("[%s] Error processing dispatch unit %s: %v", d.dispatcherID, unit.ID, err)
+				}
+			}
+		} else {
+			// No activity - check if we should log with backoff
+			now := time.Now()
+			if now.After(d.nextBackoffLog) {
+				timeSinceActivity := now.Sub(d.lastActivity)
+				registeredPRs := 0
+				if d.prPoller != nil {
+					registeredPRs = len(d.prPoller.ListRegistered())
+				}
+				log.Printf("[%s] No new dispatch activity for %s (monitoring %d PR(s))",
+					d.dispatcherID, timeSinceActivity.Round(time.Second), registeredPRs)
+
+				// Advance to next backoff level if not at max
+				if d.backoffIndex < len(backoffLevels)-1 {
+					d.backoffIndex++
+				}
+				d.nextBackoffLog = now.Add(backoffLevels[d.backoffIndex])
+			}
+		}
+
+		time.Sleep(checkInterval)
+	}
+}
+
+// reregisterActiveFlows scans existing flow records and re-registers any active PRs for monitoring
+func (d *Dispatcher) reregisterActiveFlows() {
+	if d.prPoller == nil {
 		return
 	}
 
-	// No action specified
-	flag.Usage()
-	os.Exit(1)
+	// Scan repo-isolation flow directories
+	flowsDir := filepath.Join(d.dispatcherLive, "flows", "repo-isolation")
+	entries, err := os.ReadDir(flowsDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("[%s] Warning: could not scan flows directory: %v", d.dispatcherID, err)
+		}
+		return
+	}
+
+	registered := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		flowDir := filepath.Join(flowsDir, entry.Name())
+
+		// Check if this flow has terraform state (meaning it was successfully applied)
+		statePath := filepath.Join(flowDir, "terraform.tfstate")
+		if _, err := os.Stat(statePath); os.IsNotExist(err) {
+			continue
+		}
+
+		// Get outputs
+		prURL, err := d.getTerraformOutput(flowDir, "pr_url")
+		if err != nil || prURL == "" {
+			continue
+		}
+
+		repoFullName, _ := d.getTerraformOutput(flowDir, "isolation_repo_full_name")
+		prNumberStr, _ := d.getTerraformOutput(flowDir, "pr_number")
+
+		if repoFullName == "" || prNumberStr == "" {
+			continue
+		}
+
+		var prNumber int
+		fmt.Sscanf(prNumberStr, "%d", &prNumber)
+
+		parts := strings.SplitN(repoFullName, "/", 2)
+		if len(parts) != 2 || prNumber <= 0 {
+			continue
+		}
+
+		owner, repo := parts[0], parts[1]
+		flowID := entry.Name()
+
+		d.prPoller.Register(prpoller.PRRegistration{
+			Owner:  owner,
+			Repo:   repo,
+			Number: prNumber,
+			TerraformAction: &prpoller.TerraformAction{
+				WorkDir:     flowDir,
+				Description: fmt.Sprintf("revision for flow %s", flowID),
+			},
+			OnChange: func(event prpoller.ChangeEvent) {
+				log.Printf("[%s] Detected %d new comment(s) on %s - triggering terraform apply",
+					d.dispatcherID, len(event.NewComments), prURL)
+			},
+		})
+		registered++
+		log.Printf("[%s] Re-registered existing flow %s: %s/%s#%d", d.dispatcherID, flowID, owner, repo, prNumber)
+	}
+
+	if registered > 0 {
+		log.Printf("[%s] Re-registered %d existing flow(s) for PR monitoring", d.dispatcherID, registered)
+	}
 }
 
 // printResult outputs the dispatch result
@@ -615,4 +1543,148 @@ func printResult(result *DispatchResult) {
 	if !result.Success {
 		os.Exit(1)
 	}
+}
+
+func main() {
+	// CLI flags for single-shot mode (--once)
+	onceFlag := flag.Bool("once", false, "Single-shot mode: dispatch one work unit and exit")
+	instructionFlag := flag.String("i", "", "Instruction to dispatch (requires --once)")
+	reportFlag := flag.String("r", "", "Report type to dispatch: custom, daily, weekly, monthly (requires --once)")
+	contentFlag := flag.String("c", "", "Content for custom reports (requires --once)")
+	modeFlag := flag.String("m", "prompt", "Mode for instructions: prompt or execute (requires --once)")
+	agentFlag := flag.String("a", "", "Agent to use (optional, requires --once)")
+	timeoutFlag := flag.Duration("t", defaultTimeout, "Timeout for dispatch operation (requires --once)")
+	asyncFlag := flag.Bool("async", false, "Dispatch asynchronously without waiting (requires --once)")
+	checkFlag := flag.String("check", "", "Check status of a work unit by ID (requires --once)")
+	waitFlag := flag.String("wait", "", "Wait for a work unit to complete by ID (requires --once)")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "agent-dispatch: Watch for and process dispatch work units\n\n")
+		fmt.Fprintf(os.Stderr, "By default, runs in watch mode, continuously monitoring for DISPATCH.json/md files.\n")
+		fmt.Fprintf(os.Stderr, "Use --once for single-shot dispatch operations.\n\n")
+		fmt.Fprintf(os.Stderr, "WATCH MODE (default):\n")
+		fmt.Fprintf(os.Stderr, "  agent-dispatch\n\n")
+		fmt.Fprintf(os.Stderr, "SINGLE-SHOT MODE (--once):\n")
+		fmt.Fprintf(os.Stderr, "  agent-dispatch --once -i \"instruction\" [-m mode] [-a agent] [-t timeout] [--async]\n")
+		fmt.Fprintf(os.Stderr, "  agent-dispatch --once -r type [-c content] [-a agent] [-t timeout] [--async]\n")
+		fmt.Fprintf(os.Stderr, "  agent-dispatch --once --check <work-unit-id>\n")
+		fmt.Fprintf(os.Stderr, "  agent-dispatch --once --wait <work-unit-id> [-t timeout]\n\n")
+		fmt.Fprintf(os.Stderr, "Environment Variables:\n")
+		fmt.Fprintf(os.Stderr, "  INPUT_DIR         Input directory (default: %s)\n", defaultInputDir)
+		fmt.Fprintf(os.Stderr, "  OUTPUT_DIR        Output directory (default: %s)\n", defaultOutputDir)
+		fmt.Fprintf(os.Stderr, "  RECORDS_DIR       Records directory (default: %s)\n", defaultRecordsDir)
+		fmt.Fprintf(os.Stderr, "  DISPATCHER_LIVE   Dispatcher live directory for terraform configs (default: %s)\n", defaultDispatcherLive)
+		fmt.Fprintf(os.Stderr, "  GITHUB_PAT        GitHub Personal Access Token (required for in-repo dispatch)\n")
+		fmt.Fprintf(os.Stderr, "  GH_TOKEN          Alternative to GITHUB_PAT\n")
+		fmt.Fprintf(os.Stderr, "  TERRAFORM_BINARY  Path to terraform binary (default: %s)\n\n", defaultTerraformBinary)
+		fmt.Fprintf(os.Stderr, "Watch Mode Dispatch Types:\n")
+		fmt.Fprintf(os.Stderr, "  direct         - Transform to INSTRUCTION.json for worker pickup (fire-and-forget)\n")
+		fmt.Fprintf(os.Stderr, "  in-repo        - Create branch in target repo with terraform lifecycle\n")
+		fmt.Fprintf(os.Stderr, "  repo-isolation - Create separate private isolation repo (maximum isolation)\n\n")
+		fmt.Fprintf(os.Stderr, "Notes:\n")
+		fmt.Fprintf(os.Stderr, "  - DISPATCH.md files auto-transform to DISPATCH.json with type='direct'\n")
+		fmt.Fprintf(os.Stderr, "  - In-repo terraform configs are stored in DISPATCHER_LIVE/flows/in-repo/\n\n")
+		fmt.Fprintf(os.Stderr, "Flags:\n")
+		flag.PrintDefaults()
+	}
+
+	flag.Parse()
+
+	dispatcher := NewDispatcher()
+
+	if err := dispatcher.ensureDirectories(); err != nil {
+		log.Fatalf("Failed to ensure directories: %v", err)
+	}
+
+	// Check if any single-shot flags are used (they imply --once)
+	singleShotFlagsUsed := *instructionFlag != "" || *reportFlag != "" || *checkFlag != "" || *waitFlag != ""
+
+	// If single-shot flags used without --once, enable --once automatically
+	if singleShotFlagsUsed {
+		*onceFlag = true
+	}
+
+	// Single-shot mode (--once)
+	if *onceFlag {
+		// Handle check status
+		if *checkFlag != "" {
+			result, completed, err := dispatcher.CheckStatus(*checkFlag)
+			if err != nil {
+				log.Fatalf("Error checking status: %v", err)
+			}
+			if !completed {
+				fmt.Printf("Work unit %s is still pending or in progress\n", *checkFlag)
+				os.Exit(1)
+			}
+			printResult(result)
+			return
+		}
+
+		// Handle wait for completion
+		if *waitFlag != "" {
+			log.Printf("[%s] Waiting for work unit: %s", dispatcher.dispatcherID, *waitFlag)
+			result, err := dispatcher.WaitForCompletion(*waitFlag, *timeoutFlag)
+			if err != nil {
+				log.Fatalf("Error waiting for completion: %v", err)
+			}
+			printResult(result)
+			return
+		}
+
+		// Handle instruction dispatch
+		if *instructionFlag != "" {
+			if *asyncFlag {
+				workUnitID, err := dispatcher.DispatchInstructionAsync(*instructionFlag, *modeFlag, *agentFlag)
+				if err != nil {
+					log.Fatalf("Failed to dispatch instruction: %v", err)
+				}
+				fmt.Printf("Dispatched work unit: %s\n", workUnitID)
+				fmt.Printf("Check status with: agent-dispatch --once --check %s\n", workUnitID)
+				fmt.Printf("Wait for completion with: agent-dispatch --once --wait %s\n", workUnitID)
+				return
+			}
+
+			log.Printf("[%s] Dispatching instruction (mode: %s, timeout: %s)", dispatcher.dispatcherID, *modeFlag, *timeoutFlag)
+			result, err := dispatcher.DispatchInstruction(*instructionFlag, *modeFlag, *agentFlag, *timeoutFlag)
+			if err != nil {
+				log.Fatalf("Dispatch failed: %v", err)
+			}
+			printResult(result)
+			return
+		}
+
+		// Handle report dispatch
+		if *reportFlag != "" {
+			if *reportFlag == "custom" && *contentFlag == "" {
+				log.Fatalf("Custom reports require -c content flag")
+			}
+
+			if *asyncFlag {
+				workUnitID, err := dispatcher.DispatchReportAsync(*reportFlag, *contentFlag, *agentFlag)
+				if err != nil {
+					log.Fatalf("Failed to dispatch report: %v", err)
+				}
+				fmt.Printf("Dispatched work unit: %s\n", workUnitID)
+				fmt.Printf("Check status with: agent-dispatch --once --check %s\n", workUnitID)
+				fmt.Printf("Wait for completion with: agent-dispatch --once --wait %s\n", workUnitID)
+				return
+			}
+
+			log.Printf("[%s] Dispatching report (type: %s, timeout: %s)", dispatcher.dispatcherID, *reportFlag, *timeoutFlag)
+			result, err := dispatcher.DispatchReport(*reportFlag, *contentFlag, *agentFlag, *timeoutFlag)
+			if err != nil {
+				log.Fatalf("Dispatch failed: %v", err)
+			}
+			printResult(result)
+			return
+		}
+
+		// --once specified but no action
+		fmt.Fprintf(os.Stderr, "Error: --once requires -i, -r, --check, or --wait flag\n\n")
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	// Watch mode (default)
+	dispatcher.runWatchLoop()
 }
