@@ -63,6 +63,27 @@ data "external" "pr_comments" {
   depends_on = [github_repository_pull_request.containment_pr]
 }
 
+# When REVISE: comments are detected, post a status comment to the PR before
+# beginning the revision work.
+resource "terraform_data" "post_revise_comment" {
+  triggers_replace = {
+    revise_instructions = data.external.pr_comments.result.revise_instructions_json
+  }
+
+  provisioner "local-exec" {
+    command = "python3 ${path.module}/../scripts/post_revise_comments.py"
+
+    environment = {
+      REVISE_INSTRUCTIONS_JSON = data.external.pr_comments.result.revise_instructions_json
+      GITHUB_PAT               = var.github_pat
+      REPO                     = var.target_repo
+      PR_NUMBER                = tostring(github_repository_pull_request.containment_pr.number)
+    }
+  }
+
+  depends_on = [data.external.pr_comments]
+}
+
 # For each REVISE: comment found on the PR, clone the repo at the HEAD of the
 # working branch, dispatch an AI work unit, and push the result back to the branch.
 resource "terraform_data" "handle_revise_comments" {
@@ -85,5 +106,5 @@ resource "terraform_data" "handle_revise_comments" {
     }
   }
 
-  depends_on = [data.external.pr_comments]
+  depends_on = [terraform_data.post_revise_comment]
 }
