@@ -62,3 +62,28 @@ data "external" "pr_comments" {
 
   depends_on = [github_repository_pull_request.containment_pr]
 }
+
+# For each REVISE: comment found on the PR, clone the repo at the HEAD of the
+# working branch, dispatch an AI work unit, and push the result back to the branch.
+resource "terraform_data" "handle_revise_comments" {
+  triggers_replace = {
+    revise_instructions = data.external.pr_comments.result.revise_instructions_json
+  }
+
+  provisioner "local-exec" {
+    command = "bash ${path.module}/../scripts/handle_revise_comments.sh > /tmp/revise_log.txt 2>&1"
+
+    environment = {
+      REVISE_INSTRUCTIONS_JSON = data.external.pr_comments.result.revise_instructions_json
+      BRANCH_NAME              = local.branch_name
+      SOURCE_REPO_URL = replace(
+        "https://github.com/${var.target_repo}.git", "https://", "https://${var.github_pat}@"
+      )
+      SLOPSPACES_WORK_DIR = var.slopspaces_working_dir
+      DISPATCHER_NAME     = var.dispatcher_name
+      UNIX_TIMESTAMP      = local.unix_timestamp
+    }
+  }
+
+  depends_on = [data.external.pr_comments]
+}

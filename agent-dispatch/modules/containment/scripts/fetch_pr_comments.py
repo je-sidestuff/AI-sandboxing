@@ -4,7 +4,7 @@
 Terraform external data source interface:
   - Reads a JSON object from stdin with keys: pat, repo, pr_number
   - Writes a JSON object to stdout with key: comments_json
-    (a JSON-encoded list of comment body strings)
+    (a JSON-encoded map of ISO-8601 timestamp strings to comment body strings)
 
 Usage (standalone):
   echo '{"pat":"ghp_...","repo":"owner/repo","pr_number":"42"}' | python3 fetch_pr_comments.py
@@ -37,18 +37,29 @@ def github_get(url: str, pat: str) -> list:
     return results
 
 
-def fetch_comments(pat: str, repo: str, pr_number: int) -> list[str]:
-    """Return all comment bodies on the given PR (issue + review comments)."""
+def fetch_comments(pat: str, repo: str, pr_number: int) -> dict[str, str]:
+    """Return all comment bodies on the given PR as a map of timestamp -> body."""
     base = f"https://api.github.com/repos/{repo}"
     issue_url = f"{base}/issues/{pr_number}/comments?per_page=100"
     review_url = f"{base}/pulls/{pr_number}/comments?per_page=100"
 
-    comments = []
+    comments = {}
     for item in github_get(issue_url, pat):
-        comments.append(item["body"])
+        comments[item["created_at"]] = item["body"]
     for item in github_get(review_url, pat):
-        comments.append(item["body"])
+        comments[item["created_at"]] = item["body"]
     return comments
+
+
+def extract_revise_instructions(comments: dict[str, str]) -> list[str]:
+    """Return the instruction text for any comment starting with 'REVISE:'."""
+    instructions = []
+    for body in comments.values():
+        if body.startswith("REVISE:"):
+            instruction = body[len("REVISE:"):].strip()
+            if instruction:
+                instructions.append(instruction)
+    return instructions
 
 
 def main():
@@ -58,10 +69,14 @@ def main():
     pr_number = int(query["pr_number"])
 
     comments = fetch_comments(pat, repo, pr_number)
+    revise_instructions = extract_revise_instructions(comments)
 
     # Terraform external data source requires a flat map(string) as output.
-    # We JSON-encode the list so callers can jsondecode() it back.
-    print(json.dumps({"comments_json": json.dumps(comments)}))
+    # We JSON-encode the nested structures so callers can jsondecode() them back.
+    print(json.dumps({
+        "comments_json": json.dumps(comments),
+        "revise_instructions_json": json.dumps(revise_instructions),
+    }))
 
 
 if __name__ == "__main__":
