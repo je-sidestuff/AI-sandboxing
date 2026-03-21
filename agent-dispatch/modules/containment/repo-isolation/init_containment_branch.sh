@@ -122,7 +122,7 @@ echo "========================================"
 
 # Wait for up to 10 minutes for the AI to process the work unit
 # The agent-worker moves completed work to /workspaces/slopspaces/output/
-OUTPUT_DIR="/workspaces/slopspaces/output/containment_${DISPATCHER_NAME}_${UNIX_TIMESTAMP}"
+OUTPUT_DIR="/workspaces/slopspaces/output/content/containment_${DISPATCHER_NAME}_${UNIX_TIMESTAMP}"
 echo "Waiting for the AI to process the repository..."
 echo "Expected output location: ${OUTPUT_DIR}"
 TIMEOUT=600 # 10 minutes in seconds

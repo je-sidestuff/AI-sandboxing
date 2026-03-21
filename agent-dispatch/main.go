@@ -113,7 +113,8 @@ func NewDispatcher() *Dispatcher {
 func (d *Dispatcher) ensureDirectories() error {
 	dirs := []string{
 		filepath.Join(d.inputDir, "any"),
-		d.outputDir,
+		filepath.Join(d.outputDir, "content"),
+		filepath.Join(d.outputDir, "records"),
 		filepath.Join(d.recordsDir, "dispatch"),
 	}
 	for _, dir := range dirs {
@@ -261,16 +262,21 @@ func (d *Dispatcher) createWorkUnit(workUnitID string, workUnitType string, inst
 // waitForCompletion polls OUTPUT_DIR for the completed work unit
 func (d *Dispatcher) waitForCompletion(workUnitID string, startTime time.Time, timeout time.Duration) (*DispatchResult, error) {
 	deadline := time.Now().Add(timeout)
-	outputPath := filepath.Join(d.outputDir, workUnitID)
+	// Content now goes to output/content/<work-name>
+	contentPath := filepath.Join(d.outputDir, "content", workUnitID)
 
 	for time.Now().Before(deadline) {
-		// Check if work unit has appeared in output directory
-		if _, err := os.Stat(outputPath); err == nil {
-			// Work unit folder exists in output - check for PROCESSED.md
-			processedPath := filepath.Join(outputPath, "PROCESSED.md")
-			if _, err := os.Stat(processedPath); err == nil {
-				// Processing complete
-				return d.collectResult(workUnitID, outputPath, startTime)
+		// Check if work unit has appeared in content directory
+		if _, err := os.Stat(contentPath); err == nil {
+			// Work unit folder exists in content - check for PROCESSED-*.md files
+			entries, err := os.ReadDir(contentPath)
+			if err == nil {
+				for _, entry := range entries {
+					if strings.HasPrefix(entry.Name(), "PROCESSED-") && strings.HasSuffix(entry.Name(), ".md") {
+						// Processing complete
+						return d.collectResult(workUnitID, contentPath, startTime)
+					}
+				}
 			}
 		}
 
@@ -290,36 +296,45 @@ func (d *Dispatcher) collectResult(workUnitID string, outputPath string, startTi
 		StartTime:  startTime,
 		EndTime:    endTime,
 		Duration:   endTime.Sub(startTime),
-		Success:    true, // Assume success, will update based on PROCESSED.md
+		Success:    true, // Assume success, will update based on PROCESSED-*.md
 	}
 
-	// Read PROCESSED.md for exit code and details
-	processedPath := filepath.Join(outputPath, "PROCESSED.md")
-	processedContent, err := os.ReadFile(processedPath)
+	// Find and read PROCESSED-*.md for exit code and details
+	entries, err := os.ReadDir(outputPath)
 	if err != nil {
-		result.Error = fmt.Sprintf("failed to read PROCESSED.md: %v", err)
-	} else {
-		result.ProcessedMD = string(processedContent)
+		result.Error = fmt.Sprintf("failed to read output directory: %v", err)
+		return result, nil
+	}
 
-		// Parse exit code from PROCESSED.md
-		lines := strings.Split(string(processedContent), "\n")
-		for _, line := range lines {
-			if strings.HasPrefix(line, "Exit Code:") {
-				var exitCode int
-				fmt.Sscanf(line, "Exit Code: %d", &exitCode)
-				result.ExitCode = exitCode
-				result.Success = (exitCode == 0)
-				break
+	var processedContent []byte
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "PROCESSED-") && strings.HasSuffix(entry.Name(), ".md") {
+			processedPath := filepath.Join(outputPath, entry.Name())
+			processedContent, err = os.ReadFile(processedPath)
+			if err != nil {
+				result.Error = fmt.Sprintf("failed to read %s: %v", entry.Name(), err)
+			} else {
+				result.ProcessedMD = string(processedContent)
+
+				// Parse exit code from PROCESSED-*.md
+				lines := strings.Split(string(processedContent), "\n")
+				for _, line := range lines {
+					if strings.HasPrefix(line, "Exit Code:") {
+						var exitCode int
+						fmt.Sscanf(line, "Exit Code: %d", &exitCode)
+						result.ExitCode = exitCode
+						result.Success = (exitCode == 0)
+						break
+					}
+				}
 			}
+			break
 		}
 	}
 
 	// List output files
-	entries, err := os.ReadDir(outputPath)
-	if err == nil {
-		for _, entry := range entries {
-			result.OutputFiles = append(result.OutputFiles, entry.Name())
-		}
+	for _, entry := range entries {
+		result.OutputFiles = append(result.OutputFiles, entry.Name())
 	}
 
 	return result, nil
@@ -416,10 +431,11 @@ func (d *Dispatcher) DispatchReportAsync(reportType string, content string, agen
 
 // CheckStatus checks if a work unit has completed and returns its result if available
 func (d *Dispatcher) CheckStatus(workUnitID string) (*DispatchResult, bool, error) {
-	outputPath := filepath.Join(d.outputDir, workUnitID)
+	// Content now goes to output/content/<work-name>
+	contentPath := filepath.Join(d.outputDir, "content", workUnitID)
 
-	// Check if work unit exists in output
-	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
+	// Check if work unit exists in content directory
+	if _, err := os.Stat(contentPath); os.IsNotExist(err) {
 		// Still in input or being processed
 		inputPath := filepath.Join(d.inputDir, "any", workUnitID)
 		if _, err := os.Stat(inputPath); err == nil {
@@ -433,14 +449,26 @@ func (d *Dispatcher) CheckStatus(workUnitID string) (*DispatchResult, bool, erro
 		return nil, false, fmt.Errorf("work unit %s not found", workUnitID)
 	}
 
-	// Check for PROCESSED.md
-	processedPath := filepath.Join(outputPath, "PROCESSED.md")
-	if _, err := os.Stat(processedPath); os.IsNotExist(err) {
+	// Check for PROCESSED-*.md files
+	entries, err := os.ReadDir(contentPath)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to read content directory: %v", err)
+	}
+
+	found := false
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "PROCESSED-") && strings.HasSuffix(entry.Name(), ".md") {
+			found = true
+			break
+		}
+	}
+
+	if !found {
 		return nil, false, nil // Still being processed (moved but not done)
 	}
 
 	// Collect the result
-	result, err := d.collectResult(workUnitID, outputPath, time.Time{}) // StartTime unknown for async
+	result, err := d.collectResult(workUnitID, contentPath, time.Time{}) // StartTime unknown for async
 	if err != nil {
 		return nil, true, err
 	}

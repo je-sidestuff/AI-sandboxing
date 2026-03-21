@@ -153,7 +153,8 @@ func NewAgentWorker() *AgentWorker {
 func (w *AgentWorker) ensureDirectories() error {
 	dirs := []string{
 		filepath.Join(w.inputDir, "any"),
-		w.outputDir,
+		filepath.Join(w.outputDir, "content"),
+		filepath.Join(w.outputDir, "records"),
 		filepath.Join(w.recordsDir, "worker"),
 	}
 	for _, dir := range dirs {
@@ -449,27 +450,79 @@ func (w *AgentWorker) processWorkUnit(folderPath string) error {
 	endTime := time.Now()
 	duration := endTime.Sub(startTime)
 
-	// Move folder to output directory
-	destPath := filepath.Join(w.outputDir, folderName)
-	if err := os.Rename(folderPath, destPath); err != nil {
-		return fmt.Errorf("failed to move folder to output: %w", err)
+	// Format timestamp for directory and file naming
+	timestamp := endTime.Format("2006-01-02_15-04-05")
+
+	// Create content and records directories
+	contentPath := filepath.Join(w.outputDir, "content", folderName)
+	recordsPath := filepath.Join(w.outputDir, "records", fmt.Sprintf("%s-%s", folderName, timestamp))
+
+	if err := os.MkdirAll(contentPath, 0755); err != nil {
+		return fmt.Errorf("failed to create content directory: %w", err)
+	}
+	if err := os.MkdirAll(recordsPath, 0755); err != nil {
+		return fmt.Errorf("failed to create records directory: %w", err)
 	}
 
-	// Create PROCESSED.md in the destination
-	processedMD := filepath.Join(destPath, "PROCESSED.md")
+	// Generate PROCESSED.md content
 	processedContent := fmt.Sprintf("# Processed\n\nWorker ID: %s\nStarted: %s\nCompleted: %s\nDuration: %s\nAgent: %s\nMode: %s\nExit Code: %d\n",
 		w.workerID, startTime.Format(time.RFC3339), endTime.Format(time.RFC3339),
 		duration.Round(time.Millisecond).String(), agent, inst.Mode, exitCode)
-	if err := os.WriteFile(processedMD, []byte(processedContent), 0644); err != nil {
-		log.Printf("Warning: failed to create PROCESSED.md: %v", err)
+
+	// Move work content to content directory, excluding metadata files
+	entries, err := os.ReadDir(folderPath)
+	if err != nil {
+		return fmt.Errorf("failed to read work folder: %w", err)
+	}
+
+	metadataFiles := map[string]bool{
+		"PROCESSING.md":    true,
+		"INSTRUCTION.json": true,
+		"INSTRUCTION.md":   true,
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(folderPath, entry.Name())
+		if metadataFiles[entry.Name()] {
+			// Move metadata files to records directory
+			destPath := filepath.Join(recordsPath, entry.Name())
+			if err := os.Rename(srcPath, destPath); err != nil {
+				log.Printf("Warning: failed to move metadata file %s: %v", entry.Name(), err)
+			}
+		} else {
+			// Move content files to content directory
+			destPath := filepath.Join(contentPath, entry.Name())
+			if err := os.Rename(srcPath, destPath); err != nil {
+				log.Printf("Warning: failed to move content file %s: %v", entry.Name(), err)
+			}
+		}
+	}
+
+	// Write PROCESSED.md to records directory (with original name)
+	processedMDRecords := filepath.Join(recordsPath, "PROCESSED.md")
+	if err := os.WriteFile(processedMDRecords, []byte(processedContent), 0644); err != nil {
+		log.Printf("Warning: failed to create PROCESSED.md in records: %v", err)
+	}
+
+	// Write PROCESSED.md to content directory (with timestamp suffix)
+	processedMDContent := filepath.Join(contentPath, fmt.Sprintf("PROCESSED-%s.md", timestamp))
+	if err := os.WriteFile(processedMDContent, []byte(processedContent), 0644); err != nil {
+		log.Printf("Warning: failed to create PROCESSED-%s.md in content: %v", timestamp, err)
+	}
+
+	// Remove the now-empty input folder
+	if err := os.Remove(folderPath); err != nil {
+		log.Printf("Warning: failed to remove input folder: %v", err)
 	}
 
 	// Write worker record
-	if err := w.writeWorkerRecord(folderName, inst, agent, startTime, endTime, exitCode, folderPath, destPath); err != nil {
+	if err := w.writeWorkerRecord(folderName, inst, agent, startTime, endTime, exitCode, folderPath, contentPath); err != nil {
 		log.Printf("Warning: failed to write worker record: %v", err)
 	}
 
 	log.Printf("[%s] Completed work unit: %s (exit: %d, duration: %s)", w.workerID, folderName, exitCode, duration.Round(time.Millisecond))
+	log.Printf("[%s] Content: %s", w.workerID, contentPath)
+	log.Printf("[%s] Records: %s", w.workerID, recordsPath)
 	return nil
 }
 
@@ -503,27 +556,79 @@ func (w *AgentWorker) processReportWorkUnit(folderPath string) error {
 	endTime := time.Now()
 	duration := endTime.Sub(startTime)
 
-	// Move folder to output directory
-	destPath := filepath.Join(w.outputDir, folderName)
-	if err := os.Rename(folderPath, destPath); err != nil {
-		return fmt.Errorf("failed to move folder to output: %w", err)
+	// Format timestamp for directory and file naming
+	timestamp := endTime.Format("2006-01-02_15-04-05")
+
+	// Create content and records directories
+	contentPath := filepath.Join(w.outputDir, "content", folderName)
+	recordsPath := filepath.Join(w.outputDir, "records", fmt.Sprintf("%s-%s", folderName, timestamp))
+
+	if err := os.MkdirAll(contentPath, 0755); err != nil {
+		return fmt.Errorf("failed to create content directory: %w", err)
+	}
+	if err := os.MkdirAll(recordsPath, 0755); err != nil {
+		return fmt.Errorf("failed to create records directory: %w", err)
 	}
 
-	// Create PROCESSED.md in the destination
-	processedMD := filepath.Join(destPath, "PROCESSED.md")
+	// Generate PROCESSED.md content
 	processedContent := fmt.Sprintf("# Processed\n\nWorker ID: %s\nStarted: %s\nCompleted: %s\nDuration: %s\nAgent: %s\nReport Type: %s\nExit Code: %d\n",
 		w.workerID, startTime.Format(time.RFC3339), endTime.Format(time.RFC3339),
 		duration.Round(time.Millisecond).String(), agent, report.Type, exitCode)
-	if err := os.WriteFile(processedMD, []byte(processedContent), 0644); err != nil {
-		log.Printf("Warning: failed to create PROCESSED.md: %v", err)
+
+	// Move work content to content directory, excluding metadata files
+	entries, err := os.ReadDir(folderPath)
+	if err != nil {
+		return fmt.Errorf("failed to read work folder: %w", err)
+	}
+
+	metadataFiles := map[string]bool{
+		"PROCESSING.md": true,
+		"REPORT.json":   true,
+		"REPORT.md":     true,
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(folderPath, entry.Name())
+		if metadataFiles[entry.Name()] {
+			// Move metadata files to records directory
+			destPath := filepath.Join(recordsPath, entry.Name())
+			if err := os.Rename(srcPath, destPath); err != nil {
+				log.Printf("Warning: failed to move metadata file %s: %v", entry.Name(), err)
+			}
+		} else {
+			// Move content files to content directory
+			destPath := filepath.Join(contentPath, entry.Name())
+			if err := os.Rename(srcPath, destPath); err != nil {
+				log.Printf("Warning: failed to move content file %s: %v", entry.Name(), err)
+			}
+		}
+	}
+
+	// Write PROCESSED.md to records directory (with original name)
+	processedMDRecords := filepath.Join(recordsPath, "PROCESSED.md")
+	if err := os.WriteFile(processedMDRecords, []byte(processedContent), 0644); err != nil {
+		log.Printf("Warning: failed to create PROCESSED.md in records: %v", err)
+	}
+
+	// Write PROCESSED.md to content directory (with timestamp suffix)
+	processedMDContent := filepath.Join(contentPath, fmt.Sprintf("PROCESSED-%s.md", timestamp))
+	if err := os.WriteFile(processedMDContent, []byte(processedContent), 0644); err != nil {
+		log.Printf("Warning: failed to create PROCESSED-%s.md in content: %v", timestamp, err)
+	}
+
+	// Remove the now-empty input folder
+	if err := os.Remove(folderPath); err != nil {
+		log.Printf("Warning: failed to remove input folder: %v", err)
 	}
 
 	// Write worker record
-	if err := w.writeReportWorkerRecord(folderName, report, agent, startTime, endTime, exitCode, folderPath, destPath); err != nil {
+	if err := w.writeReportWorkerRecord(folderName, report, agent, startTime, endTime, exitCode, folderPath, contentPath); err != nil {
 		log.Printf("Warning: failed to write worker record: %v", err)
 	}
 
 	log.Printf("[%s] Completed report work unit: %s (exit: %d, duration: %s)", w.workerID, folderName, exitCode, duration.Round(time.Millisecond))
+	log.Printf("[%s] Content: %s", w.workerID, contentPath)
+	log.Printf("[%s] Records: %s", w.workerID, recordsPath)
 	return nil
 }
 
@@ -755,8 +860,9 @@ func (w *AgentWorker) writeReportWorkerRecord(workUnit string, report *Report, a
 func (w *AgentWorker) run() {
 	log.Printf("[%s] Agent worker started", w.workerID)
 	log.Printf("[%s] Input: %s", w.workerID, filepath.Join(w.inputDir, "any"))
-	log.Printf("[%s] Output: %s", w.workerID, w.outputDir)
-	log.Printf("[%s] Records: %s", w.workerID, filepath.Join(w.recordsDir, "worker"))
+	log.Printf("[%s] Output content: %s", w.workerID, filepath.Join(w.outputDir, "content"))
+	log.Printf("[%s] Output records: %s", w.workerID, filepath.Join(w.outputDir, "records"))
+	log.Printf("[%s] Worker records: %s", w.workerID, filepath.Join(w.recordsDir, "worker"))
 	log.Printf("[%s] Default agent: %s", w.workerID, w.currentAgent)
 
 	// Log enabled modes

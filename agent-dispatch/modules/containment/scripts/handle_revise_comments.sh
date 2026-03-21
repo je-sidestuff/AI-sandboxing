@@ -50,7 +50,7 @@ for i in $(seq 0 $((INSTRUCTION_COUNT - 1))); do
     REVISE_ID="revise_${DISPATCHER_NAME}_${UNIX_TIMESTAMP}_${i}"
     OUTER_DIR="${SLOPSPACES_WORK_DIR}/${REVISE_ID}"
     WORKER_DIR="/workspaces/slopspaces/input/any/${REVISE_ID}"
-    OUTPUT_DIR="/workspaces/slopspaces/output/${REVISE_ID}"
+    OUTPUT_DIR="/workspaces/slopspaces/output/content/${REVISE_ID}"
 
     echo ""
     echo "----------------------------------------"
