@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -157,6 +158,12 @@ type Dispatcher struct {
 	backoffIndex    int
 	nextBackoffLog  time.Time
 	prPoller        *prpoller.Poller // centralized PR comment poller
+
+	// Change tracking for smart polling
+	flowChanges      map[string]bool // flowID -> hasChanges; set by PR poller, cleared after terraform apply
+	flowChangesMu    sync.Mutex
+	lastPeriodicPoll time.Time         // last time we did a full periodic poll
+	periodicInterval time.Duration     // how often to poll even without changes (default 5 min)
 }
 
 // NewDispatcher creates a new dispatcher instance
@@ -200,17 +207,20 @@ func NewDispatcher() *Dispatcher {
 	dispatcherID := uuid.New().String()[:8]
 
 	d := &Dispatcher{
-		dispatcherID:    dispatcherID,
-		inputDir:        inputDir,
-		outputDir:       outputDir,
-		recordsDir:      recordsDir,
-		dispatcherLive:  dispatcherLive,
-		terraformBinary: terraformBinary,
-		githubPAT:       githubPAT,
-		githubOwner:     githubOwner,
-		lastActivity:    now,
-		backoffIndex:    0,
-		nextBackoffLog:  now.Add(backoffLevels[0]),
+		dispatcherID:     dispatcherID,
+		inputDir:         inputDir,
+		outputDir:        outputDir,
+		recordsDir:       recordsDir,
+		dispatcherLive:   dispatcherLive,
+		terraformBinary:  terraformBinary,
+		githubPAT:        githubPAT,
+		githubOwner:      githubOwner,
+		lastActivity:     now,
+		backoffIndex:     0,
+		nextBackoffLog:   now.Add(backoffLevels[0]),
+		flowChanges:      make(map[string]bool),
+		lastPeriodicPoll: now,
+		periodicInterval: 5 * time.Minute, // Fallback poll every 5 minutes even without detected changes
 	}
 
 	// Initialize the PR poller for monitoring active flows
@@ -224,11 +234,46 @@ func NewDispatcher() *Dispatcher {
 				for _, c := range event.NewComments {
 					log.Printf("[%s]   - @%s: %.80s", dispatcherID, c.Author, c.Body)
 				}
+				// Mark all flows for this PR as needing terraform apply
+				d.markFlowChanged(event.PR.Owner, event.PR.Repo, event.PR.Number)
 			},
 		})
 	}
 
 	return d
+}
+
+// markFlowChanged marks flows associated with a PR as needing terraform apply
+// This is called by the PR poller when new comments are detected
+func (d *Dispatcher) markFlowChanged(owner, repo string, prNumber int) {
+	d.flowChangesMu.Lock()
+	defer d.flowChangesMu.Unlock()
+
+	// Find flows that match this PR by scanning flow records
+	flows, err := d.loadMonitoringFlows()
+	if err != nil {
+		return
+	}
+
+	prKey := fmt.Sprintf("%s/%s#%d", owner, repo, prNumber)
+	for _, flow := range flows {
+		// Check if this flow's PR URL matches
+		if flow.PRUrl != "" && strings.Contains(flow.PRUrl, fmt.Sprintf("%s/%s/pull/%d", owner, repo, prNumber)) {
+			d.flowChanges[flow.FlowID] = true
+			log.Printf("[%s] Marked flow %s for terraform apply (PR activity on %s)", d.dispatcherID, flow.FlowID, prKey)
+		}
+	}
+}
+
+// hasFlowChanges checks if a flow has pending changes and clears the flag
+func (d *Dispatcher) hasFlowChanges(flowID string) bool {
+	d.flowChangesMu.Lock()
+	defer d.flowChangesMu.Unlock()
+	if d.flowChanges[flowID] {
+		delete(d.flowChanges, flowID)
+		return true
+	}
+	return false
 }
 
 // ensureDirectories creates necessary directories
@@ -1020,12 +1065,12 @@ func (d *Dispatcher) processRepoIsolationDispatch(unit DispatchUnit) error {
 						Owner:  owner,
 						Repo:   repo,
 						Number: prNumber,
-						TerraformAction: &prpoller.TerraformAction{
-							WorkDir:     tfConfigDir,
-							Description: fmt.Sprintf("revision for flow %s", flowID),
-						},
+						// NOTE: TerraformAction is intentionally NOT set here.
+						// The pollAllMonitoringFlows loop already runs terraform apply every 10s,
+						// so we don't need the PR poller to also trigger terraform - that causes
+						// state lock conflicts. The PR poller is used only for logging/awareness.
 						OnChange: func(event prpoller.ChangeEvent) {
-							log.Printf("[%s] Detected %d new comment(s) on %s - triggering terraform apply",
+							log.Printf("[%s] Detected %d new comment(s) on %s (will be processed by monitoring loop)",
 								d.dispatcherID, len(event.NewComments), prURL)
 						},
 					})
@@ -1085,6 +1130,11 @@ provider "github" {
   type        = string
   sensitive   = true
 }
+
+variable "github_owner" {
+  description = "The GitHub owner (user or organization) where the isolation repository will be created"
+  type        = string
+}
 `
 
 	// Create main.tf with module reference
@@ -1093,6 +1143,7 @@ provider "github" {
 
   name                   = "%s"
   dispatcher_name        = "%s"
+  github_owner           = var.github_owner
   github_pat             = var.github_pat
   target_repo            = "%s"
   slopspaces_working_dir = "/workspaces/slopspaces/working/"
@@ -1134,11 +1185,22 @@ output "isolation_repo_full_name" {
   value       = module.repo_isolation_dispatch.isolation_repo_full_name
   description = "The full name (owner/repo) of the isolation repository"
 }
+
+output "conclusion_state" {
+  value       = module.repo_isolation_dispatch.conclusion_state
+  description = "Simplified conclusion state: 'active', 'closed', or 'merged'"
+}
+
+output "reintegration_pr_url" {
+  value       = module.repo_isolation_dispatch.reintegration_pr_url
+  description = "The URL of the re-integration PR (only set when isolation PR is merged)"
+}
 `
 
-	// Create terraform.tfvars with the PAT
-	tfvarsTF := fmt.Sprintf(`github_pat = "%s"
-`, d.githubPAT)
+	// Create terraform.tfvars with the PAT and owner
+	tfvarsTF := fmt.Sprintf(`github_pat   = "%s"
+github_owner = "%s"
+`, d.githubPAT, d.githubOwner)
 
 	// Write all the files
 	files := map[string]string{
@@ -1549,6 +1611,9 @@ func (d *Dispatcher) handleFlowClosed(record *FlowRecord) error {
 }
 
 // pollAllMonitoringFlows checks all flows that are in monitoring state
+// It only runs terraform apply when:
+// 1. The PR poller detected new comments for that flow, OR
+// 2. The periodic interval has elapsed (default 5 minutes) - to catch PR state changes
 func (d *Dispatcher) pollAllMonitoringFlows() {
 	flows, err := d.loadMonitoringFlows()
 	if err != nil {
@@ -1560,11 +1625,40 @@ func (d *Dispatcher) pollAllMonitoringFlows() {
 		return
 	}
 
-	log.Printf("[%s] Polling %d monitoring flows", d.dispatcherID, len(flows))
+	// Check if periodic poll is due
+	now := time.Now()
+	periodicPollDue := now.Sub(d.lastPeriodicPoll) >= d.periodicInterval
+
+	polledCount := 0
 	for i := range flows {
-		if err := d.pollMonitoringFlow(&flows[i]); err != nil {
-			log.Printf("[%s] Error polling flow %s: %v", d.dispatcherID, flows[i].FlowID, err)
+		flow := &flows[i]
+
+		// Check if this flow has detected changes OR periodic poll is due
+		hasChanges := d.hasFlowChanges(flow.FlowID)
+
+		if hasChanges {
+			log.Printf("[%s] Polling flow %s (detected PR activity)", d.dispatcherID, flow.FlowID)
+			if err := d.pollMonitoringFlow(flow); err != nil {
+				log.Printf("[%s] Error polling flow %s: %v", d.dispatcherID, flow.FlowID, err)
+			}
+			polledCount++
+		} else if periodicPollDue {
+			log.Printf("[%s] Periodic poll of flow %s (checking for PR state changes)", d.dispatcherID, flow.FlowID)
+			if err := d.pollMonitoringFlow(flow); err != nil {
+				log.Printf("[%s] Error polling flow %s: %v", d.dispatcherID, flow.FlowID, err)
+			}
+			polledCount++
 		}
+	}
+
+	// Update last periodic poll time if we did a periodic poll
+	if periodicPollDue {
+		d.lastPeriodicPoll = now
+	}
+
+	// Log summary if we polled anything
+	if polledCount > 0 {
+		log.Printf("[%s] Polled %d/%d monitoring flows", d.dispatcherID, polledCount, len(flows))
 	}
 }
 
@@ -1727,12 +1821,12 @@ func (d *Dispatcher) reregisterActiveFlows() {
 			Owner:  owner,
 			Repo:   repo,
 			Number: prNumber,
-			TerraformAction: &prpoller.TerraformAction{
-				WorkDir:     flowDir,
-				Description: fmt.Sprintf("revision for flow %s", flowID),
-			},
+			// NOTE: TerraformAction is intentionally NOT set here.
+			// The pollAllMonitoringFlows loop already runs terraform apply every 10s,
+			// so we don't need the PR poller to also trigger terraform - that causes
+			// state lock conflicts. The PR poller is used only for logging/awareness.
 			OnChange: func(event prpoller.ChangeEvent) {
-				log.Printf("[%s] Detected %d new comment(s) on %s - triggering terraform apply",
+				log.Printf("[%s] Detected %d new comment(s) on %s (will be processed by monitoring loop)",
 					d.dispatcherID, len(event.NewComments), prURL)
 			},
 		})
