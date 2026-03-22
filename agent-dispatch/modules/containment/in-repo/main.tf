@@ -50,7 +50,13 @@ resource "github_repository_pull_request" "containment_pr" {
   depends_on = [terraform_data.dispatch_first_work]
 }
 
-# Fetch all comments on the containment PR using the shared Python script
+# Fetch all comments and PR state using the shared Python script.
+# The native Terraform GitHub provider data source does not expose merged_at or
+# closed_at attributes, so we use the REST API via external data source.
+#
+# This data source executes during the plan phase. It uses the PR number from
+# the resource, which is known from state on subsequent applies. The script
+# handles errors gracefully when the PR doesn't exist yet.
 data "external" "pr_comments" {
   program = ["python3", "${path.module}/../scripts/fetch_pr_comments.py"]
 
@@ -59,22 +65,27 @@ data "external" "pr_comments" {
     repo      = var.target_repo
     pr_number = tostring(github_repository_pull_request.containment_pr.number)
   }
+}
 
-  depends_on = [github_repository_pull_request.containment_pr]
+# Compute conclusion state from the external data source
+locals {
+  pr_comments_result = data.external.pr_comments.result
+  pr_is_merged       = local.pr_comments_result.pr_merged == "true"
+  conclusion_state   = local.pr_comments_result.conclusion_state
 }
 
 # When REVISE: comments are detected, post a status comment to the PR before
 # beginning the revision work.
 resource "terraform_data" "post_revise_comment" {
   triggers_replace = {
-    revise_instructions = data.external.pr_comments.result.revise_instructions_json
+    revise_instructions = local.pr_comments_result.revise_instructions_json
   }
 
   provisioner "local-exec" {
     command = "python3 ${path.module}/../scripts/post_revise_comments.py"
 
     environment = {
-      REVISE_INSTRUCTIONS_JSON = data.external.pr_comments.result.revise_instructions_json
+      REVISE_INSTRUCTIONS_JSON = local.pr_comments_result.revise_instructions_json
       GITHUB_PAT               = var.github_pat
       REPO                     = var.target_repo
       PR_NUMBER                = tostring(github_repository_pull_request.containment_pr.number)
@@ -88,14 +99,14 @@ resource "terraform_data" "post_revise_comment" {
 # working branch, dispatch an AI work unit, and push the result back to the branch.
 resource "terraform_data" "handle_revise_comments" {
   triggers_replace = {
-    revise_instructions = data.external.pr_comments.result.revise_instructions_json
+    revise_instructions = local.pr_comments_result.revise_instructions_json
   }
 
   provisioner "local-exec" {
     command = "bash ${path.module}/../scripts/handle_revise_comments.sh > /tmp/revise_log.txt 2>&1"
 
     environment = {
-      REVISE_INSTRUCTIONS_JSON = data.external.pr_comments.result.revise_instructions_json
+      REVISE_INSTRUCTIONS_JSON = local.pr_comments_result.revise_instructions_json
       BRANCH_NAME              = local.branch_name
       SOURCE_REPO_URL = replace(
         "https://github.com/${var.target_repo}.git", "https://", "https://${var.github_pat}@"

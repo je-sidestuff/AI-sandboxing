@@ -25,3 +25,4 @@ variable "slopspaces_working_dir" {
   type        = string
   default     = "/workspaces/slopspaces/working/"
 }
+

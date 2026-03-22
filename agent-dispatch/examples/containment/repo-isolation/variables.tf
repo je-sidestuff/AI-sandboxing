@@ -9,6 +9,12 @@ variable "github_pat" {
   sensitive   = true
 }
 
+variable "github_owner" {
+  description = "The GitHub owner (user or organization) where the isolation repository will be created."
+  type        = string
+  default     = "je-sidestuff"
+}
+
 # ---------------------------------------------------------------------------------------------------------------------
 # OPTIONAL PARAMETERS
 # These parameters have reasonable defaults.
@@ -25,3 +31,10 @@ variable "slopspaces_working_dir" {
   type        = string
   default     = "/workspaces/slopspaces/working/"
 }
+
+variable "enable_reintegration" {
+  description = "When true (the default), reintegration resources are created once the isolation PR is merged. On the very first apply the count is deferred; Terraform 1.12+ handles this automatically."
+  type        = bool
+  default     = true
+}
+
