@@ -6,9 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -858,8 +856,8 @@ func (w *AgentWorker) writeReportWorkerRecord(workUnit string, report *Report, a
 	return nil
 }
 
-// run is the main processing loop. It returns when the provided stop channel is closed.
-func (w *AgentWorker) run(stop <-chan struct{}) {
+// run is the main processing loop
+func (w *AgentWorker) run() {
 	log.Printf("[%s] Agent worker started", w.workerID)
 	log.Printf("[%s] Input: %s", w.workerID, filepath.Join(w.inputDir, "any"))
 	log.Printf("[%s] Output content: %s", w.workerID, filepath.Join(w.outputDir, "content"))
@@ -881,56 +879,49 @@ func (w *AgentWorker) run(stop <-chan struct{}) {
 		log.Printf("[%s] Enabled modes: %v", w.workerID, enabledModes)
 	}
 
-	ticker := time.NewTicker(checkInterval)
-	defer ticker.Stop()
-
 	for {
-		select {
-		case <-stop:
-			log.Printf("[%s] Shutting down gracefully", w.workerID)
-			return
-		case <-ticker.C:
-			workUnits, err := w.checkForWorkUnits()
-			if err != nil {
-				log.Printf("[%s] Error checking for work units: %v", w.workerID, err)
+		workUnits, err := w.checkForWorkUnits()
+		if err != nil {
+			log.Printf("[%s] Error checking for work units: %v", w.workerID, err)
+		}
+
+		if len(workUnits) > 0 {
+			// Reset backoff on activity
+			w.lastActivity = time.Now()
+			w.backoffIndex = 0
+			w.nextBackoffLog = w.lastActivity.Add(backoffLevels[0])
+
+			for _, workUnit := range workUnits {
+				var processErr error
+				switch workUnit.Type {
+				case WorkUnitTypeInstruction:
+					processErr = w.processWorkUnit(workUnit.Path)
+				case WorkUnitTypeReport:
+					processErr = w.processReportWorkUnit(workUnit.Path)
+				default:
+					log.Printf("[%s] Unknown work unit type: %s", w.workerID, workUnit.Type)
+					continue
+				}
+				if processErr != nil {
+					log.Printf("[%s] Error processing work unit: %v", w.workerID, processErr)
+				}
 			}
+		} else {
+			// No activity - check if we should log with backoff
+			now := time.Now()
+			if now.After(w.nextBackoffLog) {
+				timeSinceActivity := now.Sub(w.lastActivity)
+				log.Printf("[%s] No new activity detected for %s", w.workerID, timeSinceActivity.Round(time.Second))
 
-			if len(workUnits) > 0 {
-				// Reset backoff on activity
-				w.lastActivity = time.Now()
-				w.backoffIndex = 0
-				w.nextBackoffLog = w.lastActivity.Add(backoffLevels[0])
-
-				for _, workUnit := range workUnits {
-					var processErr error
-					switch workUnit.Type {
-					case WorkUnitTypeInstruction:
-						processErr = w.processWorkUnit(workUnit.Path)
-					case WorkUnitTypeReport:
-						processErr = w.processReportWorkUnit(workUnit.Path)
-					default:
-						log.Printf("[%s] Unknown work unit type: %s", w.workerID, workUnit.Type)
-						continue
-					}
-					if processErr != nil {
-						log.Printf("[%s] Error processing work unit: %v", w.workerID, processErr)
-					}
+				// Advance to next backoff level if not at max
+				if w.backoffIndex < len(backoffLevels)-1 {
+					w.backoffIndex++
 				}
-			} else {
-				// No activity - check if we should log with backoff
-				now := time.Now()
-				if now.After(w.nextBackoffLog) {
-					timeSinceActivity := now.Sub(w.lastActivity)
-					log.Printf("[%s] No new activity detected for %s", w.workerID, timeSinceActivity.Round(time.Second))
-
-					// Advance to next backoff level if not at max
-					if w.backoffIndex < len(backoffLevels)-1 {
-						w.backoffIndex++
-					}
-					w.nextBackoffLog = now.Add(backoffLevels[w.backoffIndex])
-				}
+				w.nextBackoffLog = now.Add(backoffLevels[w.backoffIndex])
 			}
 		}
+
+		time.Sleep(checkInterval)
 	}
 }
 
@@ -941,15 +932,5 @@ func main() {
 		log.Fatalf("Failed to ensure directories: %v", err)
 	}
 
-	// Handle SIGINT and SIGTERM for graceful shutdown
-	stop := make(chan struct{})
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigs
-		log.Printf("Received signal %s, shutting down", sig)
-		close(stop)
-	}()
-
-	worker.run(stop)
+	worker.run()
 }

@@ -6,9 +6,7 @@ import (
 	"log"
 	"math/rand"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -460,8 +458,8 @@ func (m *EventsManager) processEvents() (int, error) {
 	return processed, nil
 }
 
-// run is the main processing loop. It returns when the provided stop channel is closed.
-func (m *EventsManager) run(stop <-chan struct{}) {
+// run is the main processing loop
+func (m *EventsManager) run() {
 	log.Printf("[%s] Agent events manager started", m.managerID)
 	log.Printf("[%s] Events config: %s", m.managerID, m.eventsConfigDir)
 	log.Printf("[%s] Input directory: %s", m.managerID, filepath.Join(m.inputDir, "any"))
@@ -476,44 +474,39 @@ func (m *EventsManager) run(stop <-chan struct{}) {
 		}
 	}
 
-	ticker := time.NewTicker(checkInterval)
-	defer ticker.Stop()
-
 	for {
-		select {
-		case <-stop:
-			log.Printf("[%s] Shutting down gracefully", m.managerID)
-			return
-		case <-ticker.C:
-			processed, err := m.processEvents()
-			if err != nil {
-				log.Printf("[%s] Error processing events: %v", m.managerID, err)
-			}
+		processed, err := m.processEvents()
+		if err != nil {
+			log.Printf("[%s] Error processing events: %v", m.managerID, err)
+		}
 
-			if processed > 0 {
-				// Reset backoff on activity
-				m.lastActivity = time.Now()
-				m.backoffIndex = 0
-				m.nextBackoffLog = m.lastActivity.Add(backoffLevels[0])
-			} else {
-				// No activity - check if we should log with backoff
-				now := time.Now()
-				if now.After(m.nextBackoffLog) {
-					timeSinceActivity := now.Sub(m.lastActivity)
-					log.Printf("[%s] No new activity detected for %s", m.managerID, timeSinceActivity.Round(time.Second))
+		if processed > 0 {
+			// Reset backoff on activity
+			m.lastActivity = time.Now()
+			m.backoffIndex = 0
+			m.nextBackoffLog = m.lastActivity.Add(backoffLevels[0])
+		} else {
+			// No activity - check if we should log with backoff
+			now := time.Now()
+			if now.After(m.nextBackoffLog) {
+				timeSinceActivity := now.Sub(m.lastActivity)
+				log.Printf("[%s] No new activity detected for %s", m.managerID, timeSinceActivity.Round(time.Second))
 
-					// Advance to next backoff level if not at max
-					if m.backoffIndex < len(backoffLevels)-1 {
-						m.backoffIndex++
-					}
-					m.nextBackoffLog = now.Add(backoffLevels[m.backoffIndex])
+				// Advance to next backoff level if not at max
+				if m.backoffIndex < len(backoffLevels)-1 {
+					m.backoffIndex++
 				}
+				m.nextBackoffLog = now.Add(backoffLevels[m.backoffIndex])
 			}
 		}
+
+		time.Sleep(checkInterval)
 	}
 }
 
 func main() {
+	rand.Seed(time.Now().UnixNano())
+
 	manager := NewEventsManager()
 
 	if err := manager.ensureDirectories(); err != nil {
@@ -528,15 +521,5 @@ func main() {
 		log.Fatalf("Failed to load configs: %v", err)
 	}
 
-	// Handle SIGINT and SIGTERM for graceful shutdown
-	stop := make(chan struct{})
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigs
-		log.Printf("Received signal %s, shutting down", sig)
-		close(stop)
-	}()
-
-	manager.run(stop)
+	manager.run()
 }
