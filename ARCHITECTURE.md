@@ -73,6 +73,46 @@ flowchart TD
     HR --> REC
 ```
 
+## Work Unit Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Pending : file written to INPUT_DIR/any/
+
+    state Pending {
+        [*] --> Waiting
+        Waiting --> Converting : .md file detected
+        Converting --> Waiting : converted to JSON
+    }
+
+    Pending --> Processing : agent-worker picks up
+
+    state Processing {
+        [*] --> Validating
+        Validating --> Invoking : input valid
+        Invoking --> AgentRunning : agent started
+        AgentRunning --> Collecting : agent responds
+    }
+
+    Processing --> Complete : exit 0
+    Processing --> Failed : exit non-0 / timeout
+
+    state Complete {
+        [*] --> WritingOutput
+        WritingOutput --> WritingRecord
+        WritingRecord --> [*]
+    }
+
+    state Failed {
+        [*] --> WritingError
+        WritingError --> WritingRecord
+        WritingRecord --> [*]
+    }
+
+    Complete --> [*] : OUTPUT_DIR/content/<unit-id>/
+    Failed --> [*] : RECORDS_DIR/worker/<unit-id>.json (error)
+```
+
 ## Containment Model Detail
 
 ```mermaid
