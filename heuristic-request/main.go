@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -457,51 +458,49 @@ func (w *HeuristicWatcher) markHeuristicFailed(unit HeuristicUnit, processErr er
 	w.writeHeuristicRecord(unit, startTime, endTime, 1, "", 0, processErr)
 }
 
+// heuristicRecord holds metadata for a processed heuristic unit
+type heuristicRecord struct {
+	WatcherID      string `json:"watcher_id"`
+	HeuristicID    string `json:"heuristic_id"`
+	StartTime      string `json:"start_time"`
+	EndTime        string `json:"end_time"`
+	DurationMs     int64  `json:"duration_ms"`
+	Agent          string `json:"agent"`
+	ExitCode       int    `json:"exit_code"`
+	RequestID      string `json:"request_id"`
+	FilesExtracted int    `json:"files_extracted"`
+	Success        bool   `json:"success"`
+	Error          string `json:"error,omitempty"`
+}
+
 // writeHeuristicRecord writes a record of the processed heuristic
 func (w *HeuristicWatcher) writeHeuristicRecord(unit HeuristicUnit, startTime, endTime time.Time, exitCode int, requestID string, filesExtracted int, processErr error) {
-	record := map[string]interface{}{
-		"watcher_id":      w.watcherID,
-		"heuristic_id":    unit.ID,
-		"start_time":      startTime.Format(time.RFC3339),
-		"end_time":        endTime.Format(time.RFC3339),
-		"duration_ms":     endTime.Sub(startTime).Milliseconds(),
-		"agent":           w.currentAgent,
-		"exit_code":       exitCode,
-		"request_id":      requestID,
-		"files_extracted": filesExtracted,
-		"success":         processErr == nil,
+	record := heuristicRecord{
+		WatcherID:      w.watcherID,
+		HeuristicID:    unit.ID,
+		StartTime:      startTime.Format(time.RFC3339),
+		EndTime:        endTime.Format(time.RFC3339),
+		DurationMs:     endTime.Sub(startTime).Milliseconds(),
+		Agent:          w.currentAgent,
+		ExitCode:       exitCode,
+		RequestID:      requestID,
+		FilesExtracted: filesExtracted,
+		Success:        processErr == nil,
 	}
 	if processErr != nil {
-		record["error"] = processErr.Error()
+		record.Error = processErr.Error()
 	}
 
-	// Use a simple format since we don't have json package yet
-	recordContent := fmt.Sprintf(`{
-  "watcher_id": "%s",
-  "heuristic_id": "%s",
-  "start_time": "%s",
-  "end_time": "%s",
-  "duration_ms": %d,
-  "agent": "%s",
-  "exit_code": %d,
-  "request_id": "%s",
-  "files_extracted": %d,
-  "success": %v`,
-		record["watcher_id"], record["heuristic_id"],
-		record["start_time"], record["end_time"],
-		record["duration_ms"], record["agent"],
-		record["exit_code"], record["request_id"],
-		record["files_extracted"], record["success"])
-
-	if processErr != nil {
-		recordContent += fmt.Sprintf(",\n  \"error\": %q", processErr.Error())
+	recordData, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		log.Printf("[%s] Warning: failed to marshal heuristic record: %v", w.watcherID, err)
+		return
 	}
-	recordContent += "\n}"
 
 	recordFilename := fmt.Sprintf("%s_%s_%d.json", w.watcherID, unit.ID, time.Now().Unix())
 	recordPath := filepath.Join(w.recordsDir, "heuristic", recordFilename)
 
-	if err := os.WriteFile(recordPath, []byte(recordContent), 0644); err != nil {
+	if err := os.WriteFile(recordPath, recordData, 0644); err != nil {
 		log.Printf("[%s] Warning: failed to write heuristic record: %v", w.watcherID, err)
 	}
 }
