@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -475,33 +476,16 @@ func (w *HeuristicWatcher) writeHeuristicRecord(unit HeuristicUnit, startTime, e
 		record["error"] = processErr.Error()
 	}
 
-	// Use a simple format since we don't have json package yet
-	recordContent := fmt.Sprintf(`{
-  "watcher_id": "%s",
-  "heuristic_id": "%s",
-  "start_time": "%s",
-  "end_time": "%s",
-  "duration_ms": %d,
-  "agent": "%s",
-  "exit_code": %d,
-  "request_id": "%s",
-  "files_extracted": %d,
-  "success": %v`,
-		record["watcher_id"], record["heuristic_id"],
-		record["start_time"], record["end_time"],
-		record["duration_ms"], record["agent"],
-		record["exit_code"], record["request_id"],
-		record["files_extracted"], record["success"])
-
-	if processErr != nil {
-		recordContent += fmt.Sprintf(",\n  \"error\": %q", processErr.Error())
+	recordData, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		log.Printf("[%s] Warning: failed to marshal heuristic record: %v", w.watcherID, err)
+		return
 	}
-	recordContent += "\n}"
 
 	recordFilename := fmt.Sprintf("%s_%s_%d.json", w.watcherID, unit.ID, time.Now().Unix())
 	recordPath := filepath.Join(w.recordsDir, "heuristic", recordFilename)
 
-	if err := os.WriteFile(recordPath, []byte(recordContent), 0644); err != nil {
+	if err := os.WriteFile(recordPath, recordData, 0644); err != nil {
 		log.Printf("[%s] Warning: failed to write heuristic record: %v", w.watcherID, err)
 	}
 }

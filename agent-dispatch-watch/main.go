@@ -516,20 +516,24 @@ output "branch_name" {
 	tfvarsTF := fmt.Sprintf(`github_pat = "%s"
 `, w.githubPAT)
 
-	// Write all the files
-	files := map[string]string{
-		"providers.tf":    providersTF,
-		"variables.tf":    variablesTF,
-		"main.tf":         mainTF,
-		"outputs.tf":      outputsTF,
-		"terraform.tfvars": tfvarsTF,
+	// Write non-secret terraform files
+	plainFiles := map[string]string{
+		"providers.tf": providersTF,
+		"variables.tf": variablesTF,
+		"main.tf":      mainTF,
+		"outputs.tf":   outputsTF,
 	}
-
-	for filename, content := range files {
+	for filename, content := range plainFiles {
 		path := filepath.Join(configDir, filename)
 		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 			return fmt.Errorf("failed to write %s: %w", filename, err)
 		}
+	}
+
+	// Write terraform.tfvars with restricted permissions: it contains the GitHub PAT
+	tfvarsPath := filepath.Join(configDir, "terraform.tfvars")
+	if err := os.WriteFile(tfvarsPath, []byte(tfvarsTF), 0600); err != nil {
+		return fmt.Errorf("failed to write terraform.tfvars: %w", err)
 	}
 
 	// Also write a dispatch record to the config dir for reference
