@@ -40,6 +40,8 @@ INPUT_DIR/any/<unit-id>/
                                 └─[repo-isolation]► terraform → isolated repo + PR
 ```
 
+See [ARCHITECTURE.md](ARCHITECTURE.md) for full system and containment-model sequence diagrams.
+
 ## Quick Start
 
 ### Run the worker (processes INSTRUCTION.json files)
