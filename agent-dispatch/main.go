@@ -43,6 +43,13 @@ const (
 	DispatchTypeRepoIsolation = "repo-isolation"
 )
 
+// Conclusion state constants
+const (
+	ConclusionStateActive = "active"
+	ConclusionStateClosed = "closed"
+	ConclusionStateMerged = "merged"
+)
+
 // Exponential backoff levels for logging inactivity
 var backoffLevels = []time.Duration{
 	30 * time.Second,
@@ -120,16 +127,20 @@ type DispatchUnit struct {
 
 // FlowRecord holds metadata for tracked terraform flows
 type FlowRecord struct {
-	DispatcherID string `json:"dispatcher_id"`
-	FlowID       string `json:"flow_id"`
-	DispatchType string `json:"dispatch_type"`
-	DispatchPath string `json:"dispatch_path"`
-	TFConfigDir  string `json:"tf_config_dir,omitempty"`
-	StartTime    string `json:"start_time"`
-	EndTime      string `json:"end_time,omitempty"`
-	Status       string `json:"status"` // "pending", "running", "completed", "failed"
-	Error        string `json:"error,omitempty"`
-	PRUrl        string `json:"pr_url,omitempty"`
+	DispatcherID     string `json:"dispatcher_id"`
+	FlowID           string `json:"flow_id"`
+	DispatchType     string `json:"dispatch_type"`
+	DispatchPath     string `json:"dispatch_path"`
+	TFConfigDir      string `json:"tf_config_dir,omitempty"`
+	StartTime        string `json:"start_time"`
+	EndTime          string `json:"end_time,omitempty"`
+	Status           string `json:"status"` // "pending", "running", "monitoring", "completed", "failed"
+	Error            string `json:"error,omitempty"`
+	PRUrl            string `json:"pr_url,omitempty"`
+	ConclusionState  string `json:"conclusion_state,omitempty"`   // "active", "closed", "merged"
+	NeedsMonitoring  bool   `json:"needs_monitoring,omitempty"`   // true if flow should be polled for conclusion state
+	LastPollTime     string `json:"last_poll_time,omitempty"`
+	ReintegrationURL string `json:"reintegration_url,omitempty"` // For repo-isolation: URL of reintegration PR
 }
 
 // Dispatcher manages dispatching work units and collecting results
@@ -141,6 +152,7 @@ type Dispatcher struct {
 	dispatcherLive  string
 	terraformBinary string
 	githubPAT       string
+	githubOwner     string // For repo-isolation: the owner for isolation repos
 	lastActivity    time.Time
 	backoffIndex    int
 	nextBackoffLog  time.Time
@@ -179,6 +191,11 @@ func NewDispatcher() *Dispatcher {
 		githubPAT = os.Getenv("GH_TOKEN")
 	}
 
+	githubOwner := os.Getenv("GITHUB_OWNER")
+	if githubOwner == "" {
+		githubOwner = "je-sidestuff" // Default owner for isolation repos
+	}
+
 	now := time.Now()
 	dispatcherID := uuid.New().String()[:8]
 
@@ -190,6 +207,7 @@ func NewDispatcher() *Dispatcher {
 		dispatcherLive:  dispatcherLive,
 		terraformBinary: terraformBinary,
 		githubPAT:       githubPAT,
+		githubOwner:     githubOwner,
 		lastActivity:    now,
 		backoffIndex:    0,
 		nextBackoffLog:  now.Add(backoffLevels[0]),
@@ -868,21 +886,26 @@ func (d *Dispatcher) processInRepoDispatch(unit DispatchUnit) error {
 		return fmt.Errorf("terraform apply failed: %w", err)
 	}
 
-	// Terraform lifecycle is complete - PR has been created and work dispatched
-	// Mark the flow as complete
-	flowRecord.Status = "completed"
-	flowRecord.EndTime = time.Now().Format(time.RFC3339)
+	// Initial terraform apply complete - PR has been created and work dispatched
+	// Now enter monitoring phase to watch for PR merge/close
+	flowRecord.Status = "monitoring"
+	flowRecord.NeedsMonitoring = true
+	flowRecord.LastPollTime = time.Now().Format(time.RFC3339)
+
+	// Get the initial conclusion state
+	conclusionState, _ := d.getTerraformOutput(tfConfigDir, "conclusion_state")
+	flowRecord.ConclusionState = conclusionState
 
 	// Try to get PR URL from terraform output
 	prURL, _ := d.getTerraformOutput(tfConfigDir, "pr_url")
 	if prURL != "" {
 		flowRecord.PRUrl = prURL
-		log.Printf("[%s] In-repo dispatch complete, PR URL: %s", d.dispatcherID, prURL)
+		log.Printf("[%s] In-repo dispatch created, PR URL: %s (entering monitoring)", d.dispatcherID, prURL)
 	}
 
 	d.writeFlowRecord(flowRecord)
 
-	log.Printf("[%s] In-repo dispatch terraform lifecycle complete for flow %s", d.dispatcherID, flowID)
+	log.Printf("[%s] In-repo dispatch flow %s now monitoring for conclusion", d.dispatcherID, flowID)
 	return nil
 }
 
@@ -959,21 +982,27 @@ func (d *Dispatcher) processRepoIsolationDispatch(unit DispatchUnit) error {
 		return fmt.Errorf("terraform apply failed: %w", err)
 	}
 
-	// Terraform lifecycle is complete - isolation repo has been created and work dispatched
-	flowRecord.Status = "completed"
-	flowRecord.EndTime = time.Now().Format(time.RFC3339)
+	// Initial terraform apply complete - PR has been created in isolation repo
+	// Now enter monitoring phase to watch for PR merge/close
+	flowRecord.Status = "monitoring"
+	flowRecord.NeedsMonitoring = true
+	flowRecord.LastPollTime = time.Now().Format(time.RFC3339)
+
+	// Get the initial conclusion state
+	conclusionState, _ := d.getTerraformOutput(tfConfigDir, "conclusion_state")
+	flowRecord.ConclusionState = conclusionState
 
 	// Try to get branch name from terraform output (repo-isolation outputs this)
 	branchName, _ := d.getTerraformOutput(tfConfigDir, "branch_name")
 	if branchName != "" {
-		log.Printf("[%s] Repo-isolation dispatch complete, isolation repo: %s, branch: %s", d.dispatcherID, isolationName, branchName)
+		log.Printf("[%s] Repo-isolation dispatch created, isolation repo: %s, branch: %s", d.dispatcherID, isolationName, branchName)
 	}
 
 	// Get the PR URL and register for monitoring
 	prURL, _ := d.getTerraformOutput(tfConfigDir, "pr_url")
 	if prURL != "" {
 		flowRecord.PRUrl = prURL
-		log.Printf("[%s] Containment PR: %s", d.dispatcherID, prURL)
+		log.Printf("[%s] Containment PR: %s (entering monitoring)", d.dispatcherID, prURL)
 
 		// Register the PR for monitoring with the poller
 		if d.prPoller != nil {
@@ -1008,7 +1037,7 @@ func (d *Dispatcher) processRepoIsolationDispatch(unit DispatchUnit) error {
 
 	d.writeFlowRecord(flowRecord)
 
-	log.Printf("[%s] Repo-isolation dispatch terraform lifecycle complete for flow %s", d.dispatcherID, flowID)
+	log.Printf("[%s] Repo-isolation dispatch flow %s now monitoring for conclusion", d.dispatcherID, flowID)
 	return nil
 }
 
@@ -1360,6 +1389,185 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+// loadMonitoringFlows loads all flows that need monitoring from the records directory
+func (d *Dispatcher) loadMonitoringFlows() ([]FlowRecord, error) {
+	recordsPath := filepath.Join(d.recordsDir, "dispatch-watch")
+	entries, err := os.ReadDir(recordsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var monitoringFlows []FlowRecord
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "flow_") && strings.HasSuffix(entry.Name(), ".json") {
+			recordPath := filepath.Join(recordsPath, entry.Name())
+			data, err := os.ReadFile(recordPath)
+			if err != nil {
+				log.Printf("[%s] Warning: failed to read flow record %s: %v", d.dispatcherID, entry.Name(), err)
+				continue
+			}
+
+			var record FlowRecord
+			if err := json.Unmarshal(data, &record); err != nil {
+				log.Printf("[%s] Warning: failed to parse flow record %s: %v", d.dispatcherID, entry.Name(), err)
+				continue
+			}
+
+			// Only include flows that need monitoring
+			if record.NeedsMonitoring && record.Status == "monitoring" {
+				monitoringFlows = append(monitoringFlows, record)
+			}
+		}
+	}
+
+	return monitoringFlows, nil
+}
+
+// pollMonitoringFlow runs terraform apply to refresh state and check conclusion state
+func (d *Dispatcher) pollMonitoringFlow(record *FlowRecord) error {
+	if record.TFConfigDir == "" {
+		return fmt.Errorf("flow %s has no terraform config directory", record.FlowID)
+	}
+
+	// Check if config dir still exists
+	if !fileExists(record.TFConfigDir) {
+		log.Printf("[%s] Flow %s terraform config dir no longer exists, marking as completed", d.dispatcherID, record.FlowID)
+		record.Status = "completed"
+		record.NeedsMonitoring = false
+		record.EndTime = time.Now().Format(time.RFC3339)
+		d.writeFlowRecord(*record)
+		return nil
+	}
+
+	log.Printf("[%s] Polling flow %s for conclusion state", d.dispatcherID, record.FlowID)
+
+	// Run terraform apply to refresh state and potentially trigger revisions or re-integration
+	if err := d.runTerraform(record.TFConfigDir, "apply", "-auto-approve"); err != nil {
+		log.Printf("[%s] Flow %s terraform apply failed: %v", d.dispatcherID, record.FlowID, err)
+		// Don't fail the flow yet - could be a transient error
+		return err
+	}
+
+	// Update last poll time
+	record.LastPollTime = time.Now().Format(time.RFC3339)
+
+	// Get the current conclusion state
+	newConclusionState, err := d.getTerraformOutput(record.TFConfigDir, "conclusion_state")
+	if err != nil {
+		log.Printf("[%s] Flow %s failed to get conclusion_state: %v", d.dispatcherID, record.FlowID, err)
+		d.writeFlowRecord(*record)
+		return nil // Continue monitoring
+	}
+
+	oldState := record.ConclusionState
+	record.ConclusionState = newConclusionState
+
+	// Check for state change
+	if oldState != newConclusionState {
+		log.Printf("[%s] Flow %s conclusion state changed: %s -> %s", d.dispatcherID, record.FlowID, oldState, newConclusionState)
+		return d.handleConclusionStateChange(record, newConclusionState)
+	}
+
+	// No state change - keep monitoring
+	d.writeFlowRecord(*record)
+	return nil
+}
+
+// handleConclusionStateChange reacts to a change in the conclusion state
+func (d *Dispatcher) handleConclusionStateChange(record *FlowRecord, newState string) error {
+	switch newState {
+	case ConclusionStateMerged:
+		return d.handleFlowMerged(record)
+	case ConclusionStateClosed:
+		return d.handleFlowClosed(record)
+	case ConclusionStateActive:
+		// Still active - keep monitoring
+		d.writeFlowRecord(*record)
+		return nil
+	default:
+		log.Printf("[%s] Flow %s has unknown conclusion state: %s", d.dispatcherID, record.FlowID, newState)
+		d.writeFlowRecord(*record)
+		return nil
+	}
+}
+
+// handleFlowMerged handles a flow whose PR has been merged
+func (d *Dispatcher) handleFlowMerged(record *FlowRecord) error {
+	log.Printf("[%s] Flow %s PR was merged - performing final apply and cleanup", d.dispatcherID, record.FlowID)
+
+	// For repo-isolation, the terraform apply we just ran should have already
+	// created the re-integration PR. Let's get its URL.
+	if record.DispatchType == DispatchTypeRepoIsolation {
+		reintegrationURL, err := d.getTerraformOutput(record.TFConfigDir, "reintegration_pr_url")
+		if err == nil && reintegrationURL != "" {
+			record.ReintegrationURL = reintegrationURL
+			log.Printf("[%s] Flow %s re-integration PR created: %s", d.dispatcherID, record.FlowID, reintegrationURL)
+		}
+	}
+
+	// Now run terraform destroy to clean up resources
+	log.Printf("[%s] Running terraform destroy for flow %s", d.dispatcherID, record.FlowID)
+	if err := d.runTerraform(record.TFConfigDir, "destroy", "-auto-approve"); err != nil {
+		log.Printf("[%s] Flow %s terraform destroy failed: %v", d.dispatcherID, record.FlowID, err)
+		record.Error = fmt.Sprintf("terraform destroy failed: %v", err)
+		// Mark as completed anyway since the PR is merged
+	}
+
+	// Mark as completed
+	record.Status = "completed"
+	record.NeedsMonitoring = false
+	record.EndTime = time.Now().Format(time.RFC3339)
+	d.writeFlowRecord(*record)
+
+	log.Printf("[%s] Flow %s completed (merged)", d.dispatcherID, record.FlowID)
+	return nil
+}
+
+// handleFlowClosed handles a flow whose PR was closed without being merged
+func (d *Dispatcher) handleFlowClosed(record *FlowRecord) error {
+	log.Printf("[%s] Flow %s PR was closed without merge - cleaning up", d.dispatcherID, record.FlowID)
+
+	// Run terraform destroy to clean up resources (branch, isolation repo if applicable)
+	log.Printf("[%s] Running terraform destroy for flow %s", d.dispatcherID, record.FlowID)
+	if err := d.runTerraform(record.TFConfigDir, "destroy", "-auto-approve"); err != nil {
+		log.Printf("[%s] Flow %s terraform destroy failed: %v", d.dispatcherID, record.FlowID, err)
+		record.Error = fmt.Sprintf("terraform destroy failed: %v", err)
+		// Mark as completed anyway since the PR is closed
+	}
+
+	// Mark as completed
+	record.Status = "completed"
+	record.NeedsMonitoring = false
+	record.EndTime = time.Now().Format(time.RFC3339)
+	d.writeFlowRecord(*record)
+
+	log.Printf("[%s] Flow %s completed (closed without merge)", d.dispatcherID, record.FlowID)
+	return nil
+}
+
+// pollAllMonitoringFlows checks all flows that are in monitoring state
+func (d *Dispatcher) pollAllMonitoringFlows() {
+	flows, err := d.loadMonitoringFlows()
+	if err != nil {
+		log.Printf("[%s] Error loading monitoring flows: %v", d.dispatcherID, err)
+		return
+	}
+
+	if len(flows) == 0 {
+		return
+	}
+
+	log.Printf("[%s] Polling %d monitoring flows", d.dispatcherID, len(flows))
+	for i := range flows {
+		if err := d.pollMonitoringFlow(&flows[i]); err != nil {
+			log.Printf("[%s] Error polling flow %s: %v", d.dispatcherID, flows[i].FlowID, err)
+		}
+	}
+}
+
 // runWatchLoop is the main watch loop
 func (d *Dispatcher) runWatchLoop() {
 	log.Printf("[%s] Dispatch watcher started", d.dispatcherID)
@@ -1367,11 +1575,12 @@ func (d *Dispatcher) runWatchLoop() {
 	log.Printf("[%s] Output: %s", d.dispatcherID, d.outputDir)
 	log.Printf("[%s] Records: %s", d.dispatcherID, filepath.Join(d.recordsDir, "dispatch-watch"))
 	log.Printf("[%s] Dispatcher Live: %s", d.dispatcherID, d.dispatcherLive)
+	log.Printf("[%s] GitHub Owner: %s", d.dispatcherID, d.githubOwner)
 
 	if d.githubPAT != "" {
-		log.Printf("[%s] GitHub PAT: configured (in-repo dispatch enabled)", d.dispatcherID)
+		log.Printf("[%s] GitHub PAT: configured (in-repo and repo-isolation dispatch enabled)", d.dispatcherID)
 	} else {
-		log.Printf("[%s] GitHub PAT: not configured (in-repo dispatch will fail)", d.dispatcherID)
+		log.Printf("[%s] GitHub PAT: not configured (in-repo and repo-isolation dispatch will fail)", d.dispatcherID)
 	}
 
 	// Start the PR poller if configured
@@ -1423,17 +1632,30 @@ func (d *Dispatcher) runWatchLoop() {
 					log.Printf("[%s] Error processing dispatch unit %s: %v", d.dispatcherID, unit.ID, err)
 				}
 			}
-		} else {
-			// No activity - check if we should log with backoff
+		}
+
+		// Phase 2: Poll all flows that are in monitoring state
+		d.pollAllMonitoringFlows()
+
+		// Check for inactivity logging
+		if len(dispatchUnits) == 0 {
 			now := time.Now()
 			if now.After(d.nextBackoffLog) {
 				timeSinceActivity := now.Sub(d.lastActivity)
+
+				// Count monitoring flows
+				flows, _ := d.loadMonitoringFlows()
 				registeredPRs := 0
 				if d.prPoller != nil {
 					registeredPRs = len(d.prPoller.ListRegistered())
 				}
-				log.Printf("[%s] No new dispatch activity for %s (monitoring %d PR(s))",
-					d.dispatcherID, timeSinceActivity.Round(time.Second), registeredPRs)
+				if len(flows) > 0 {
+					log.Printf("[%s] No new dispatch activity for %s (%d flows being monitored, %d PR(s) registered)",
+						d.dispatcherID, timeSinceActivity.Round(time.Second), len(flows), registeredPRs)
+				} else {
+					log.Printf("[%s] No new dispatch activity for %s (monitoring %d PR(s))",
+						d.dispatcherID, timeSinceActivity.Round(time.Second), registeredPRs)
+				}
 
 				// Advance to next backoff level if not at max
 				if d.backoffIndex < len(backoffLevels)-1 {
@@ -1574,16 +1796,18 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  OUTPUT_DIR        Output directory (default: %s)\n", defaultOutputDir)
 		fmt.Fprintf(os.Stderr, "  RECORDS_DIR       Records directory (default: %s)\n", defaultRecordsDir)
 		fmt.Fprintf(os.Stderr, "  DISPATCHER_LIVE   Dispatcher live directory for terraform configs (default: %s)\n", defaultDispatcherLive)
-		fmt.Fprintf(os.Stderr, "  GITHUB_PAT        GitHub Personal Access Token (required for in-repo dispatch)\n")
+		fmt.Fprintf(os.Stderr, "  GITHUB_PAT        GitHub Personal Access Token (required for in-repo/repo-isolation)\n")
 		fmt.Fprintf(os.Stderr, "  GH_TOKEN          Alternative to GITHUB_PAT\n")
+		fmt.Fprintf(os.Stderr, "  GITHUB_OWNER      GitHub owner for isolation repos (default: je-sidestuff)\n")
 		fmt.Fprintf(os.Stderr, "  TERRAFORM_BINARY  Path to terraform binary (default: %s)\n\n", defaultTerraformBinary)
 		fmt.Fprintf(os.Stderr, "Watch Mode Dispatch Types:\n")
 		fmt.Fprintf(os.Stderr, "  direct         - Transform to INSTRUCTION.json for worker pickup (fire-and-forget)\n")
-		fmt.Fprintf(os.Stderr, "  in-repo        - Create branch in target repo with terraform lifecycle\n")
-		fmt.Fprintf(os.Stderr, "  repo-isolation - Create separate private isolation repo (maximum isolation)\n\n")
+		fmt.Fprintf(os.Stderr, "  in-repo        - Create PR in target repo, monitor until merged/closed, then cleanup\n")
+		fmt.Fprintf(os.Stderr, "  repo-isolation - Create isolation repo, monitor PR, re-integrate on merge, then cleanup\n\n")
 		fmt.Fprintf(os.Stderr, "Notes:\n")
 		fmt.Fprintf(os.Stderr, "  - DISPATCH.md files auto-transform to DISPATCH.json with type='direct'\n")
-		fmt.Fprintf(os.Stderr, "  - In-repo terraform configs are stored in DISPATCHER_LIVE/flows/in-repo/\n\n")
+		fmt.Fprintf(os.Stderr, "  - Terraform configs are stored in DISPATCHER_LIVE/flows/{in-repo,repo-isolation}/\n")
+		fmt.Fprintf(os.Stderr, "  - Flows are polled for PR merge/close and cleaned up automatically\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 	}
