@@ -85,3 +85,19 @@ output "pr_is_merged" {
   description = "Whether the isolation PR was merged: 'true' or 'false'"
   value       = local.pr_is_merged
 }
+
+# Reintegration PR state outputs - only populated when reintegration PR exists
+output "reintegration_conclusion_state" {
+  description = "Simplified conclusion state for the reintegration PR: 'none' (not created yet), 'active' (PR open), 'closed' (PR closed without merge), or 'merged' (PR merged)"
+  value       = local.reintegration_conclusion_state
+}
+
+output "reintegration_pr_state" {
+  description = "Raw PR state from GitHub API for reintegration PR: 'open', 'closed', or empty if not created"
+  value       = try(local.reintegration_pr_result.pr_state, "")
+}
+
+output "reintegration_pr_merged" {
+  description = "Whether the reintegration PR was merged: 'true', 'false', or empty if not created"
+  value       = try(local.reintegration_pr_result.pr_merged, "")
+}

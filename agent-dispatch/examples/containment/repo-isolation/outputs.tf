@@ -23,3 +23,8 @@ output "reintegration_pr_url" {
   description = "The URL of the re-integration PR in the target repo (only set when merged)"
   value       = module.ai_containment.reintegration_pr_url
 }
+
+output "reintegration_conclusion_state" {
+  description = "Conclusion state of the reintegration PR: 'none', 'active', 'closed', or 'merged'"
+  value       = module.ai_containment.reintegration_conclusion_state
+}

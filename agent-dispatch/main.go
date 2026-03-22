@@ -44,11 +44,19 @@ const (
 	DispatchTypeRepoIsolation = "repo-isolation"
 )
 
-// Conclusion state constants
+// Conclusion state constants for isolation PR
 const (
 	ConclusionStateActive = "active"
 	ConclusionStateClosed = "closed"
 	ConclusionStateMerged = "merged"
+)
+
+// Reintegration conclusion state constants
+const (
+	ReintegrationStateNone   = "none"   // Reintegration PR not created yet
+	ReintegrationStateActive = "active" // Reintegration PR is open
+	ReintegrationStateClosed = "closed" // Reintegration PR was closed without merge
+	ReintegrationStateMerged = "merged" // Reintegration PR was merged
 )
 
 // Exponential backoff levels for logging inactivity
@@ -1195,6 +1203,11 @@ output "reintegration_pr_url" {
   value       = module.repo_isolation_dispatch.reintegration_pr_url
   description = "The URL of the re-integration PR (only set when isolation PR is merged)"
 }
+
+output "reintegration_conclusion_state" {
+  value       = module.repo_isolation_dispatch.reintegration_conclusion_state
+  description = "Conclusion state for reintegration PR: 'none', 'active', 'closed', or 'merged'"
+}
 `
 
 	// Create terraform.tfvars with the PAT and owner
@@ -1516,7 +1529,7 @@ func (d *Dispatcher) pollMonitoringFlow(record *FlowRecord) error {
 	// Update last poll time
 	record.LastPollTime = time.Now().Format(time.RFC3339)
 
-	// Get the current conclusion state
+	// Get the current conclusion state (isolation PR state)
 	newConclusionState, err := d.getTerraformOutput(record.TFConfigDir, "conclusion_state")
 	if err != nil {
 		log.Printf("[%s] Flow %s failed to get conclusion_state: %v", d.dispatcherID, record.FlowID, err)
@@ -1527,13 +1540,29 @@ func (d *Dispatcher) pollMonitoringFlow(record *FlowRecord) error {
 	oldState := record.ConclusionState
 	record.ConclusionState = newConclusionState
 
-	// Check for state change
+	// Check for isolation PR state change
 	if oldState != newConclusionState {
 		log.Printf("[%s] Flow %s conclusion state changed: %s -> %s", d.dispatcherID, record.FlowID, oldState, newConclusionState)
 		return d.handleConclusionStateChange(record, newConclusionState)
 	}
 
-	// No state change - keep monitoring
+	// If isolation PR is already merged, check the reintegration PR state
+	if newConclusionState == ConclusionStateMerged && record.DispatchType == DispatchTypeRepoIsolation {
+		reintegrationState, err := d.getTerraformOutput(record.TFConfigDir, "reintegration_conclusion_state")
+		if err == nil {
+			// Check if reintegration PR is now merged or closed
+			if reintegrationState == ReintegrationStateMerged || reintegrationState == ReintegrationStateClosed {
+				log.Printf("[%s] Flow %s reintegration PR state: %s - ready for cleanup", d.dispatcherID, record.FlowID, reintegrationState)
+				return d.handleReintegrationComplete(record, reintegrationState)
+			}
+			// Reintegration PR is still active (or not created yet) - keep monitoring
+			if reintegrationState == ReintegrationStateActive {
+				log.Printf("[%s] Flow %s awaiting reintegration PR (state: %s)", d.dispatcherID, record.FlowID, reintegrationState)
+			}
+		}
+	}
+
+	// No actionable state change - keep monitoring
 	d.writeFlowRecord(*record)
 	return nil
 }
@@ -1556,26 +1585,49 @@ func (d *Dispatcher) handleConclusionStateChange(record *FlowRecord, newState st
 	}
 }
 
-// handleFlowMerged handles a flow whose PR has been merged
+// handleFlowMerged handles a flow whose isolation PR has been merged
+// For repo-isolation, this means we now need to wait for the reintegration PR
 func (d *Dispatcher) handleFlowMerged(record *FlowRecord) error {
-	log.Printf("[%s] Flow %s PR was merged - performing final apply and cleanup", d.dispatcherID, record.FlowID)
+	log.Printf("[%s] Flow %s isolation PR was merged", d.dispatcherID, record.FlowID)
 
-	// For repo-isolation, the terraform apply we just ran should have already
-	// created the re-integration PR. Let's get its URL.
+	// For repo-isolation, we need to wait for the reintegration PR to be merged/closed
 	if record.DispatchType == DispatchTypeRepoIsolation {
 		reintegrationURL, err := d.getTerraformOutput(record.TFConfigDir, "reintegration_pr_url")
 		if err == nil && reintegrationURL != "" {
 			record.ReintegrationURL = reintegrationURL
 			log.Printf("[%s] Flow %s re-integration PR created: %s", d.dispatcherID, record.FlowID, reintegrationURL)
+			log.Printf("[%s] Flow %s now awaiting reintegration PR merge/close before cleanup", d.dispatcherID, record.FlowID)
 		}
+
+		// Check if the reintegration PR is already merged/closed
+		reintegrationState, err := d.getTerraformOutput(record.TFConfigDir, "reintegration_conclusion_state")
+		if err == nil && (reintegrationState == ReintegrationStateMerged || reintegrationState == ReintegrationStateClosed) {
+			// Reintegration PR is already done, proceed to cleanup
+			return d.handleReintegrationComplete(record, reintegrationState)
+		}
+
+		// Keep monitoring - reintegration PR is still open
+		d.writeFlowRecord(*record)
+		return nil
 	}
 
-	// Now run terraform destroy to clean up resources
-	log.Printf("[%s] Running terraform destroy for flow %s", d.dispatcherID, record.FlowID)
+	// For non-repo-isolation flows, proceed with immediate cleanup
+	return d.performFlowCleanup(record, "merged")
+}
+
+// handleReintegrationComplete handles cleanup after reintegration PR is merged/closed
+func (d *Dispatcher) handleReintegrationComplete(record *FlowRecord, reintegrationState string) error {
+	log.Printf("[%s] Flow %s reintegration PR is %s - performing cleanup", d.dispatcherID, record.FlowID, reintegrationState)
+	return d.performFlowCleanup(record, fmt.Sprintf("merged+reintegration_%s", reintegrationState))
+}
+
+// performFlowCleanup runs terraform destroy and marks the flow as completed
+func (d *Dispatcher) performFlowCleanup(record *FlowRecord, reason string) error {
+	log.Printf("[%s] Running terraform destroy for flow %s (reason: %s)", d.dispatcherID, record.FlowID, reason)
 	if err := d.runTerraform(record.TFConfigDir, "destroy", "-auto-approve"); err != nil {
 		log.Printf("[%s] Flow %s terraform destroy failed: %v", d.dispatcherID, record.FlowID, err)
 		record.Error = fmt.Sprintf("terraform destroy failed: %v", err)
-		// Mark as completed anyway since the PR is merged
+		// Mark as completed anyway
 	}
 
 	// Mark as completed
@@ -1584,30 +1636,14 @@ func (d *Dispatcher) handleFlowMerged(record *FlowRecord) error {
 	record.EndTime = time.Now().Format(time.RFC3339)
 	d.writeFlowRecord(*record)
 
-	log.Printf("[%s] Flow %s completed (merged)", d.dispatcherID, record.FlowID)
+	log.Printf("[%s] Flow %s completed (%s)", d.dispatcherID, record.FlowID, reason)
 	return nil
 }
 
-// handleFlowClosed handles a flow whose PR was closed without being merged
+// handleFlowClosed handles a flow whose isolation PR was closed without being merged
 func (d *Dispatcher) handleFlowClosed(record *FlowRecord) error {
-	log.Printf("[%s] Flow %s PR was closed without merge - cleaning up", d.dispatcherID, record.FlowID)
-
-	// Run terraform destroy to clean up resources (branch, isolation repo if applicable)
-	log.Printf("[%s] Running terraform destroy for flow %s", d.dispatcherID, record.FlowID)
-	if err := d.runTerraform(record.TFConfigDir, "destroy", "-auto-approve"); err != nil {
-		log.Printf("[%s] Flow %s terraform destroy failed: %v", d.dispatcherID, record.FlowID, err)
-		record.Error = fmt.Sprintf("terraform destroy failed: %v", err)
-		// Mark as completed anyway since the PR is closed
-	}
-
-	// Mark as completed
-	record.Status = "completed"
-	record.NeedsMonitoring = false
-	record.EndTime = time.Now().Format(time.RFC3339)
-	d.writeFlowRecord(*record)
-
-	log.Printf("[%s] Flow %s completed (closed without merge)", d.dispatcherID, record.FlowID)
-	return nil
+	log.Printf("[%s] Flow %s isolation PR was closed without merge - cleaning up", d.dispatcherID, record.FlowID)
+	return d.performFlowCleanup(record, "closed")
 }
 
 // pollAllMonitoringFlows checks all flows that are in monitoring state

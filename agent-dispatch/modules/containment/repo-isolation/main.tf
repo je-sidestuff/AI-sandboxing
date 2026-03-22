@@ -213,3 +213,29 @@ resource "github_repository_pull_request" "reintegration_pr" {
 
   depends_on = [terraform_data.push_to_target]
 }
+
+# =============================================================================
+# REINTEGRATION PR STATE: Track when the reintegration PR is merged/closed
+# =============================================================================
+
+# Fetch the reintegration PR state to know when it's safe to destroy resources.
+# This only executes when the reintegration PR exists (count > 0).
+data "external" "reintegration_pr_state" {
+  count = var.enable_reintegration && local.pr_is_merged ? 1 : 0
+
+  program = ["python3", "${path.module}/../scripts/fetch_pr_comments.py"]
+
+  query = {
+    pat       = var.github_pat
+    repo      = var.target_repo
+    pr_number = tostring(github_repository_pull_request.reintegration_pr[0].number)
+  }
+
+  depends_on = [github_repository_pull_request.reintegration_pr]
+}
+
+locals {
+  # Reintegration PR state - only valid when reintegration PR exists
+  reintegration_pr_result = try(data.external.reintegration_pr_state[0].result, null)
+  reintegration_conclusion_state = try(local.reintegration_pr_result.conclusion_state, "none")
+}
