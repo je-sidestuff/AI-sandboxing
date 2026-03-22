@@ -17,7 +17,7 @@ import (
 // Default paths
 const (
 	defaultHeuristicDir = "/workspaces/slopspaces/heuristic"
-	defaultRequestDir   = "/workspaces/slopspaces/requests"
+	defaultRequestDir   = "/workspaces/slopspaces/input/any"  // Output to agent-dispatch input dir
 	defaultRecordsDir   = "/workspaces/slopspaces/agent-records/"
 	checkInterval       = 10 * time.Second
 	defaultAgent        = "claude"
@@ -581,7 +581,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  heuristic-request [--watch|--once]\n\n")
 		fmt.Fprintf(os.Stderr, "Environment Variables:\n")
 		fmt.Fprintf(os.Stderr, "  HEURISTIC_DIR  Directory to watch for HEURISTIC.md files (default: %s)\n", defaultHeuristicDir)
-		fmt.Fprintf(os.Stderr, "  REQUEST_DIR    Directory to place extracted requests (default: %s)\n", defaultRequestDir)
+		fmt.Fprintf(os.Stderr, "  REQUEST_DIR    Directory to place extracted requests for agent-dispatch (default: %s)\n", defaultRequestDir)
 		fmt.Fprintf(os.Stderr, "  RECORDS_DIR    Records directory (default: %s)\n", defaultRecordsDir)
 		fmt.Fprintf(os.Stderr, "  AGENT_PRESET   Agent to use (default: %s)\n\n", defaultAgent)
 		fmt.Fprintf(os.Stderr, "How it works:\n")
