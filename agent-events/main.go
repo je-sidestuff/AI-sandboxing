@@ -505,9 +505,6 @@ func (m *EventsManager) run() {
 }
 
 func main() {
-	// Seed random number generator
-	rand.Seed(time.Now().UnixNano())
-
 	manager := NewEventsManager()
 
 	if err := manager.ensureDirectories(); err != nil {
