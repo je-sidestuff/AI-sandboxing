@@ -236,7 +236,7 @@ func NewDispatcher() *Dispatcher {
 		nextBackoffLog:   now.Add(backoffLevels[0]),
 		flowChanges:      make(map[string]bool),
 		lastPeriodicPoll: now,
-		periodicInterval: 5 * time.Minute, // Fallback poll every 5 minutes even without detected changes
+		periodicInterval: 1 * time.Minute, // Fallback poll every 1 minute even without detected changes
 	}
 
 	// Initialize the PR poller for monitoring active flows
@@ -2283,7 +2283,7 @@ func (d *Dispatcher) handleFlowClosed(record *FlowRecord) error {
 // pollAllMonitoringFlows checks all flows that are in monitoring state
 // It only runs terraform apply when:
 // 1. The PR poller detected new comments for that flow, OR
-// 2. The periodic interval has elapsed (default 5 minutes) - to catch PR state changes
+// 2. The periodic interval has elapsed (default 1 minute) - to catch PR state changes
 func (d *Dispatcher) pollAllMonitoringFlows() {
 	flows, err := d.loadMonitoringFlows()
 	if err != nil {
