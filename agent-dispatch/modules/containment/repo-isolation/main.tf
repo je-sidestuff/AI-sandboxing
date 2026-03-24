@@ -61,8 +61,8 @@ resource "terraform_data" "dispatch_first_work" {
 
 # Create a pull request in the isolation repo so that we can have a PR to work with in the next steps
 resource "github_repository_pull_request" "containment_pr" {
-  title           = "Dispatch: ${var.dispatcher_name} (${local.unix_timestamp})"
-  body            = "This is a PR to let us test out some AI containment strategies."
+  title           = var.pr_title != "" ? var.pr_title : "Dispatch: ${var.dispatcher_name} (${local.unix_timestamp})"
+  body            = var.pr_body != "" ? var.pr_body : var.instruction
   head_ref        = local.branch_name
   base_ref        = "main"
   base_repository = github_repository.isolation_repo.name

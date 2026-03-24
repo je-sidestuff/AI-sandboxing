@@ -38,3 +38,14 @@ variable "enable_reintegration" {
   default     = true
 }
 
+variable "instruction" {
+  description = "The instruction passed to the AI agent. Used as the PR body so reviewers can understand what task the agent is performing."
+  type        = string
+}
+
+variable "pr_title" {
+  description = "The title for the containment PR. If omitted, a generated title is used."
+  type        = string
+  default     = ""
+}
+

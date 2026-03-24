@@ -64,3 +64,15 @@ variable "instruction_mode" {
   default     = "execute"
 }
 
+variable "pr_title" {
+  description = "The title for the containment PR. Defaults to a generated title based on dispatcher_name and timestamp."
+  type        = string
+  default     = ""
+}
+
+variable "pr_body" {
+  description = "The body for the containment PR. Defaults to the instruction text."
+  type        = string
+  default     = ""
+}
+

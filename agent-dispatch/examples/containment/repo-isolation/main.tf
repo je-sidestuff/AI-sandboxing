@@ -11,4 +11,6 @@ module "ai_containment" {
   github_owner           = var.github_owner
   slopspaces_working_dir = var.slopspaces_working_dir
   enable_reintegration   = var.enable_reintegration
+  instruction            = var.instruction
+  pr_title               = var.pr_title
 }
