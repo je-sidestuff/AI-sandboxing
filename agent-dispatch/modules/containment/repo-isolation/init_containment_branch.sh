@@ -12,6 +12,8 @@
 #   SOURCE_REPO_URL      - The authenticated HTTPS URL of the target repository (baseline source)
 #   ISOLATION_REPO_URL   - The authenticated HTTPS URL of the isolation repository
 #   DISPATCHER_NAME      - The name of the dispatcher (used for directory naming)
+#   INSTRUCTION          - The instruction to pass to the AI agent
+#   INSTRUCTION_MODE     - The mode for the instruction ('prompt' or 'execute')
 
 set -e
 
@@ -86,13 +88,15 @@ echo "Step 4: Isolating git state..."
 mv "$OUTER_DIR/repo/.git" "${OUTER_DIR}/git_state/.git"
 echo "Moved .git to: ${OUTER_DIR}/git_state/.git"
 
-# Step 5: Create the INSTRUCTION file in the repo (using execute mode)
+# Step 5: Create the INSTRUCTION file in the repo
 echo ""
-echo "Step 5: Creating INSTRUCTION.json file (execute mode)..."
-cat > "$OUTER_DIR/repo/INSTRUCTION.json" << 'INSTRUCTION_EOF'
+echo "Step 5: Creating INSTRUCTION.json file (mode: ${INSTRUCTION_MODE})..."
+# Use jq to properly escape the instruction for JSON
+# The instruction may contain newlines, quotes, etc. that need proper escaping
+cat > "$OUTER_DIR/repo/INSTRUCTION.json" << INSTRUCTION_EOF
 {
-  "mode": "execute",
-  "instruction": "You are working on a contained branch for testing AI code generation.\n\nPlease make meaningful improvements to this repository. Some suggestions:\n- Add useful documentation\n- Improve code quality\n- Add helpful comments\n- Fix any obvious issues\n\nWhen you are done, save your changes. The containment system will handle committing and pushing."
+  "mode": "${INSTRUCTION_MODE}",
+  "instruction": $(echo "$INSTRUCTION" | jq -Rs .)
 }
 INSTRUCTION_EOF
 echo "Created: ${OUTER_DIR}/repo/INSTRUCTION.json"

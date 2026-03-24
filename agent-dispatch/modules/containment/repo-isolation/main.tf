@@ -51,6 +51,8 @@ resource "terraform_data" "dispatch_first_work" {
         github_repository.isolation_repo.http_clone_url, "https://", "https://${var.github_pat}@"
       )
       DISPATCHER_NAME      = var.dispatcher_name
+      INSTRUCTION          = var.instruction
+      INSTRUCTION_MODE     = var.instruction_mode
     }
   }
 

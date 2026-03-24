@@ -53,3 +53,14 @@ variable "enable_reintegration" {
   default     = true
 }
 
+variable "instruction" {
+  description = "The instruction to pass to the AI agent for processing in this repo-isolation dispatch."
+  type        = string
+}
+
+variable "instruction_mode" {
+  description = "The mode for the instruction ('prompt' or 'execute')."
+  type        = string
+  default     = "execute"
+}
+

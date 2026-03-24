@@ -1445,7 +1445,24 @@ variable "github_owner" {
   description = "The GitHub owner (user or organization) where the isolation repository will be created"
   type        = string
 }
+
+variable "instruction" {
+  description = "The instruction to pass to the AI agent"
+  type        = string
+}
+
+variable "instruction_mode" {
+  description = "The mode for the instruction (prompt or execute)"
+  type        = string
+  default     = "execute"
+}
 `
+
+	// Get mode from dispatch, default to "execute"
+	mode := "execute"
+	if dispatch.Mode != "" {
+		mode = dispatch.Mode
+	}
 
 	// Create main.tf with module reference
 	mainTF := fmt.Sprintf(`module "repo_isolation_dispatch" {
@@ -1457,6 +1474,8 @@ variable "github_owner" {
   github_pat             = var.github_pat
   target_repo            = "%s"
   slopspaces_working_dir = "/workspaces/slopspaces/working/"
+  instruction            = var.instruction
+  instruction_mode       = var.instruction_mode
 }
 `, modulePath, isolationName, flowID, targetRepo)
 
@@ -1512,10 +1531,17 @@ output "reintegration_conclusion_state" {
 }
 `
 
-	// Create terraform.tfvars with the PAT and owner
-	tfvarsTF := fmt.Sprintf(`github_pat   = "%s"
-github_owner = "%s"
-`, d.githubPAT, d.githubOwner)
+	// Escape the instruction for Terraform HCL
+	escapedInstruction := strings.ReplaceAll(dispatch.Instruction, "\\", "\\\\")
+	escapedInstruction = strings.ReplaceAll(escapedInstruction, "\"", "\\\"")
+	escapedInstruction = strings.ReplaceAll(escapedInstruction, "\n", "\\n")
+
+	// Create terraform.tfvars with the PAT, owner, and instruction
+	tfvarsTF := fmt.Sprintf(`github_pat       = "%s"
+github_owner     = "%s"
+instruction      = "%s"
+instruction_mode = "%s"
+`, d.githubPAT, d.githubOwner, escapedInstruction, mode)
 
 	// Write all the files
 	files := map[string]string{
