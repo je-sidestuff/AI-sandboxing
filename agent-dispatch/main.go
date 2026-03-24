@@ -87,7 +87,7 @@ type Report struct {
 
 // Dispatch represents the JSON structure for dispatch work units (watch mode)
 type Dispatch struct {
-	Type            string            `json:"type"`                      // "direct", "in-repo", "repo-isolation", or "approval"
+	Type            string            `json:"type"`                      // "direct", "in-repo", "repo-isolation" (NOT "approval" - approval is automatic)
 	Instruction     string            `json:"instruction"`               // The instruction to dispatch
 	Mode            string            `json:"mode,omitempty"`            // "prompt" or "execute" (default: "execute")
 	Agent           string            `json:"agent,omitempty"`           // Optional agent override
@@ -95,8 +95,9 @@ type Dispatch struct {
 	PRTitle         string            `json:"pr_title,omitempty"`        // For in-repo/repo-isolation: optional PR title
 	PRBody          string            `json:"pr_body,omitempty"`         // For in-repo/repo-isolation: optional PR body
 	IsolationName   string            `json:"isolation_name,omitempty"`  // For repo-isolation: name of isolation repo to create
-	ApprovalRepo    string            `json:"approval_repo,omitempty"`   // For approval: "owner/repo" of approval repository
-	SourceContext   string            `json:"source_context,omitempty"`  // For approval: description of request origin
+	ApprovalRepo    string            `json:"approval_repo,omitempty"`   // "owner/repo" of approval repository (default: sloppo)
+	SourceContext   string            `json:"source_context,omitempty"`  // Description of request origin
+	SkipApproval    bool              `json:"skip_approval,omitempty"`   // If true, skip the approval gate (use with caution!)
 	Timestamp       string            `json:"timestamp,omitempty"`
 	Metadata        map[string]string `json:"metadata,omitempty"` // Additional metadata
 }
@@ -139,23 +140,24 @@ type DispatchUnit struct {
 
 // FlowRecord holds metadata for tracked terraform flows
 type FlowRecord struct {
-	DispatcherID       string `json:"dispatcher_id"`
-	FlowID             string `json:"flow_id"`
-	DispatchType       string `json:"dispatch_type"`
-	DispatchPath       string `json:"dispatch_path"`
-	TFConfigDir        string `json:"tf_config_dir,omitempty"`
-	StartTime          string `json:"start_time"`
-	EndTime            string `json:"end_time,omitempty"`
-	Status             string `json:"status"` // "pending", "running", "monitoring", "completed", "failed"
-	Error              string `json:"error,omitempty"`
-	PRUrl              string `json:"pr_url,omitempty"`
-	ConclusionState    string `json:"conclusion_state,omitempty"`   // "active", "closed", "merged"
-	NeedsMonitoring    bool   `json:"needs_monitoring,omitempty"`   // true if flow should be polled for conclusion state
-	LastPollTime       string `json:"last_poll_time,omitempty"`
-	ReintegrationURL   string `json:"reintegration_url,omitempty"`   // For repo-isolation: URL of reintegration PR
-	PendingInstruction string `json:"pending_instruction,omitempty"` // For approval: instruction to execute when approved
-	PendingMode        string `json:"pending_mode,omitempty"`        // For approval: mode for pending instruction
-	PendingAgent       string `json:"pending_agent,omitempty"`       // For approval: agent override for pending instruction
+	DispatcherID       string    `json:"dispatcher_id"`
+	FlowID             string    `json:"flow_id"`
+	DispatchType       string    `json:"dispatch_type"`
+	DispatchPath       string    `json:"dispatch_path"`
+	TFConfigDir        string    `json:"tf_config_dir,omitempty"`
+	StartTime          string    `json:"start_time"`
+	EndTime            string    `json:"end_time,omitempty"`
+	Status             string    `json:"status"` // "pending", "running", "monitoring", "completed", "failed"
+	Error              string    `json:"error,omitempty"`
+	PRUrl              string    `json:"pr_url,omitempty"`
+	ConclusionState    string    `json:"conclusion_state,omitempty"`   // "active", "closed", "merged"
+	NeedsMonitoring    bool      `json:"needs_monitoring,omitempty"`   // true if flow should be polled for conclusion state
+	LastPollTime       string    `json:"last_poll_time,omitempty"`
+	ReintegrationURL   string    `json:"reintegration_url,omitempty"`   // For repo-isolation: URL of reintegration PR
+	PendingInstruction string    `json:"pending_instruction,omitempty"` // For approval (legacy): instruction to execute when approved
+	PendingMode        string    `json:"pending_mode,omitempty"`        // For approval (legacy): mode for pending instruction
+	PendingAgent       string    `json:"pending_agent,omitempty"`       // For approval (legacy): agent override for pending instruction
+	PendingDispatch    *Dispatch `json:"pending_dispatch,omitempty"`    // For approval-gated flows: full dispatch to execute after approval
 }
 
 // Dispatcher manages dispatching work units and collecting results
@@ -821,6 +823,13 @@ func (d *Dispatcher) processDispatchUnit(unit DispatchUnit) error {
 		return fmt.Errorf("failed to create DISPATCHING.md: %w", err)
 	}
 
+	// Option B: ALL dispatches require approval by default unless SkipApproval is true
+	// The only exception is type="approval" which is already an approval flow (to prevent infinite loops)
+	if !unit.Dispatch.SkipApproval && unit.Dispatch.Type != DispatchTypeApproval {
+		log.Printf("[%s] Dispatch requires approval gate (type: %s, skip_approval: %v)", d.dispatcherID, unit.Dispatch.Type, unit.Dispatch.SkipApproval)
+		return d.createApprovalGatedDispatch(unit)
+	}
+
 	var err error
 	switch unit.Dispatch.Type {
 	case DispatchTypeDirect:
@@ -830,6 +839,7 @@ func (d *Dispatcher) processDispatchUnit(unit DispatchUnit) error {
 	case DispatchTypeRepoIsolation:
 		err = d.processRepoIsolationDispatch(unit)
 	case DispatchTypeApproval:
+		// Legacy: explicit approval type (for backwards compatibility)
 		err = d.processApprovalDispatch(unit)
 	default:
 		err = fmt.Errorf("unsupported dispatch type: %s", unit.Dispatch.Type)
@@ -1102,9 +1112,155 @@ func (d *Dispatcher) processRepoIsolationDispatch(unit DispatchUnit) error {
 	return nil
 }
 
-// processApprovalDispatch handles approval dispatch (creates PR in approval repo, waits for merge to execute)
+// createApprovalGatedDispatch gates a dispatch through the approval flow
+// This is the default behavior for all dispatches (Option B: ALL dispatches require approval)
+// After approval PR merges, the dispatch will be re-emitted with SkipApproval=true
+func (d *Dispatcher) createApprovalGatedDispatch(unit DispatchUnit) error {
+	log.Printf("[%s] Creating approval-gated dispatch for: %s (type: %s)", d.dispatcherID, unit.ID, unit.Dispatch.Type)
+
+	if d.githubPAT == "" {
+		return fmt.Errorf("GITHUB_PAT or GH_TOKEN environment variable is required for approval-gated dispatch")
+	}
+
+	// Get approval repo (default to sloppo)
+	approvalRepo := unit.Dispatch.ApprovalRepo
+	if approvalRepo == "" {
+		approvalRepo = os.Getenv("APPROVAL_REPO")
+	}
+	if approvalRepo == "" {
+		approvalRepo = "je-sidestuff/sloppo"
+	}
+
+	// Parse owner/repo if full name provided, otherwise use githubOwner
+	var approvalRepoName string
+	var approvalOwner string
+	if strings.Contains(approvalRepo, "/") {
+		parts := strings.SplitN(approvalRepo, "/", 2)
+		approvalOwner = parts[0]
+		approvalRepoName = parts[1]
+	} else {
+		approvalOwner = d.githubOwner
+		approvalRepoName = approvalRepo
+	}
+
+	// Get source context
+	sourceContext := unit.Dispatch.SourceContext
+	if sourceContext == "" {
+		sourceContext = fmt.Sprintf("%s dispatch", unit.Dispatch.Type)
+	}
+
+	// Generate a unique flow ID
+	flowID := generateFlowID(DispatchTypeApproval)
+
+	// Create the terraform config directory
+	tfConfigDir := filepath.Join(d.dispatcherLive, "flows", "approval", flowID)
+	if err := os.MkdirAll(tfConfigDir, 0755); err != nil {
+		return fmt.Errorf("failed to create terraform config directory: %w", err)
+	}
+
+	// Store the full pending dispatch for later execution
+	pendingDispatch := *unit.Dispatch // Copy the dispatch
+	pendingDispatch.SkipApproval = true // Pre-set for post-approval re-dispatch
+
+	// Write the flow record with pending dispatch details
+	flowRecord := FlowRecord{
+		DispatcherID:       d.dispatcherID,
+		FlowID:             flowID,
+		DispatchType:       DispatchTypeApproval,
+		DispatchPath:       unit.Path,
+		TFConfigDir:        tfConfigDir,
+		StartTime:          time.Now().Format(time.RFC3339),
+		Status:             "running",
+		PendingDispatch:    &pendingDispatch,
+		// Also set legacy fields for backwards compatibility in terraform config
+		PendingInstruction: unit.Dispatch.Instruction,
+		PendingMode:        unit.Dispatch.Mode,
+		PendingAgent:       unit.Dispatch.Agent,
+	}
+	d.writeFlowRecord(flowRecord)
+
+	// Create the terraform configuration
+	if err := d.createApprovalTerraformConfig(tfConfigDir, flowID, approvalOwner, approvalRepoName, sourceContext, unit.Dispatch); err != nil {
+		flowRecord.Status = "failed"
+		flowRecord.Error = err.Error()
+		flowRecord.EndTime = time.Now().Format(time.RFC3339)
+		d.writeFlowRecord(flowRecord)
+		return fmt.Errorf("failed to create terraform config: %w", err)
+	}
+
+	// Run terraform init
+	log.Printf("[%s] Running terraform init in %s", d.dispatcherID, tfConfigDir)
+	if err := d.runTerraform(tfConfigDir, "init"); err != nil {
+		flowRecord.Status = "failed"
+		flowRecord.Error = fmt.Sprintf("terraform init failed: %v", err)
+		flowRecord.EndTime = time.Now().Format(time.RFC3339)
+		d.writeFlowRecord(flowRecord)
+		return fmt.Errorf("terraform init failed: %w", err)
+	}
+
+	// Run terraform apply
+	log.Printf("[%s] Running terraform apply in %s", d.dispatcherID, tfConfigDir)
+	if err := d.runTerraform(tfConfigDir, "apply", "-auto-approve"); err != nil {
+		flowRecord.Status = "failed"
+		flowRecord.Error = fmt.Sprintf("terraform apply failed: %v", err)
+		flowRecord.EndTime = time.Now().Format(time.RFC3339)
+		d.writeFlowRecord(flowRecord)
+		return fmt.Errorf("terraform apply failed: %w", err)
+	}
+
+	// Initial terraform apply complete - approval PR has been created
+	// Now enter monitoring phase to watch for PR merge/close
+	flowRecord.Status = "monitoring"
+	flowRecord.NeedsMonitoring = true
+	flowRecord.LastPollTime = time.Now().Format(time.RFC3339)
+
+	// Get the initial conclusion state
+	conclusionState, _ := d.getTerraformOutput(tfConfigDir, "conclusion_state")
+	flowRecord.ConclusionState = conclusionState
+
+	// Get the PR URL and register for monitoring
+	prURL, _ := d.getTerraformOutput(tfConfigDir, "pr_url")
+	if prURL != "" {
+		flowRecord.PRUrl = prURL
+		log.Printf("[%s] Approval-gated PR: %s (awaiting approval for %s dispatch)", d.dispatcherID, prURL, unit.Dispatch.Type)
+
+		// Register the PR for monitoring with the poller
+		if d.prPoller != nil {
+			prNumberStr, _ := d.getTerraformOutput(tfConfigDir, "pr_number")
+
+			if prNumberStr != "" {
+				var prNumber int
+				fmt.Sscanf(prNumberStr, "%d", &prNumber)
+
+				if prNumber > 0 {
+					d.prPoller.Register(prpoller.PRRegistration{
+						Owner:  approvalOwner,
+						Repo:   approvalRepoName,
+						Number: prNumber,
+						OnChange: func(event prpoller.ChangeEvent) {
+							log.Printf("[%s] Detected activity on approval-gated PR %s",
+								d.dispatcherID, prURL)
+							// Mark this flow as having changes for the polling loop
+							d.flowChangesMu.Lock()
+							d.flowChanges[flowID] = true
+							d.flowChangesMu.Unlock()
+						},
+					})
+					log.Printf("[%s] Registered approval-gated PR %s/%s#%d for monitoring", d.dispatcherID, approvalOwner, approvalRepoName, prNumber)
+				}
+			}
+		}
+	}
+
+	d.writeFlowRecord(flowRecord)
+
+	log.Printf("[%s] Approval-gated dispatch flow %s now monitoring for approval (pending type: %s)", d.dispatcherID, flowID, unit.Dispatch.Type)
+	return nil
+}
+
+// processApprovalDispatch handles explicit approval dispatch (legacy, creates PR in approval repo, waits for merge to execute)
 func (d *Dispatcher) processApprovalDispatch(unit DispatchUnit) error {
-	log.Printf("[%s] Processing approval dispatch: %s", d.dispatcherID, unit.ID)
+	log.Printf("[%s] Processing legacy approval dispatch: %s", d.dispatcherID, unit.ID)
 
 	if d.githubPAT == "" {
 		return fmt.Errorf("GITHUB_PAT or GH_TOKEN environment variable is required for approval dispatch")
@@ -1933,9 +2089,62 @@ func (d *Dispatcher) handleFlowMerged(record *FlowRecord) error {
 	return d.performFlowCleanup(record, "merged")
 }
 
-// handleApprovalMerged handles when an approval PR is merged - creates INSTRUCTION.json to execute
+// handleApprovalMerged handles when an approval PR is merged - creates DISPATCH.json or INSTRUCTION.json to execute
 func (d *Dispatcher) handleApprovalMerged(record *FlowRecord) error {
-	log.Printf("[%s] Approval PR merged for flow %s - creating INSTRUCTION.json", d.dispatcherID, record.FlowID)
+	// Check if we have a pending dispatch (new flow) or just pending instruction (legacy flow)
+	if record.PendingDispatch != nil {
+		return d.handleApprovalMergedDispatch(record)
+	}
+	return d.handleApprovalMergedInstruction(record)
+}
+
+// handleApprovalMergedDispatch creates DISPATCH.json after approval for approval-gated flows
+func (d *Dispatcher) handleApprovalMergedDispatch(record *FlowRecord) error {
+	log.Printf("[%s] Approval PR merged for flow %s - creating DISPATCH.json (type: %s)", d.dispatcherID, record.FlowID, record.PendingDispatch.Type)
+
+	// Create a new work unit directory for the approved dispatch
+	timestamp := time.Now().Format("20060102-150405")
+	workUnitID := fmt.Sprintf("approved-%s-%s", record.FlowID, timestamp)
+	workUnitPath := filepath.Join(d.inputDir, "any", workUnitID)
+
+	if err := os.MkdirAll(workUnitPath, 0755); err != nil {
+		log.Printf("[%s] Error creating work unit directory: %v", d.dispatcherID, err)
+		record.Error = fmt.Sprintf("failed to create work unit directory: %v", err)
+		d.writeFlowRecord(*record)
+		return d.performFlowCleanup(record, "approved-error")
+	}
+
+	// The pending dispatch already has SkipApproval=true (set in createApprovalGatedDispatch)
+	// This prevents infinite approval loops
+	dispatch := record.PendingDispatch
+	dispatch.Timestamp = time.Now().Format(time.RFC3339)
+
+	dispatchData, err := json.MarshalIndent(dispatch, "", "  ")
+	if err != nil {
+		log.Printf("[%s] Error marshaling dispatch: %v", d.dispatcherID, err)
+		record.Error = fmt.Sprintf("failed to marshal dispatch: %v", err)
+		d.writeFlowRecord(*record)
+		return d.performFlowCleanup(record, "approved-error")
+	}
+
+	dispatchPath := filepath.Join(workUnitPath, "DISPATCH.json")
+	if err := os.WriteFile(dispatchPath, dispatchData, 0644); err != nil {
+		log.Printf("[%s] Error writing DISPATCH.json: %v", d.dispatcherID, err)
+		record.Error = fmt.Sprintf("failed to write DISPATCH.json: %v", err)
+		d.writeFlowRecord(*record)
+		return d.performFlowCleanup(record, "approved-error")
+	}
+
+	log.Printf("[%s] Created DISPATCH.json at %s for approved %s dispatch", d.dispatcherID, dispatchPath, dispatch.Type)
+	log.Printf("[%s] Approved dispatch (type=%s, skip_approval=%v): %s", d.dispatcherID, dispatch.Type, dispatch.SkipApproval, truncateString(dispatch.Instruction, 100))
+
+	// Cleanup the approval flow
+	return d.performFlowCleanup(record, "approved")
+}
+
+// handleApprovalMergedInstruction creates INSTRUCTION.json after approval (legacy flow)
+func (d *Dispatcher) handleApprovalMergedInstruction(record *FlowRecord) error {
+	log.Printf("[%s] Approval PR merged for flow %s - creating INSTRUCTION.json (legacy)", d.dispatcherID, record.FlowID)
 
 	// Get the pending instruction details from the flow record (stored at dispatch time)
 	pendingInstruction := record.PendingInstruction
@@ -1999,7 +2208,7 @@ func (d *Dispatcher) handleApprovalMerged(record *FlowRecord) error {
 		return d.performFlowCleanup(record, "approved-error")
 	}
 
-	log.Printf("[%s] Created INSTRUCTION.json at %s for approved instruction", d.dispatcherID, instructionPath)
+	log.Printf("[%s] Created INSTRUCTION.json at %s for approved instruction (legacy)", d.dispatcherID, instructionPath)
 	log.Printf("[%s] Approved instruction (mode=%s): %s", d.dispatcherID, pendingMode, truncateString(pendingInstruction, 100))
 
 	// Cleanup the approval flow

@@ -673,14 +673,22 @@ func (w *AgentWorker) executeAgent(folderPath string, inst *Instruction, agent s
 	defer os.Remove(promptFile)
 
 	// Build command arguments using -f to read prompt from file
+	// When in execute mode, work units have already been approved through PR workflow
 	cmdArgs := []string{modeFlag, "-a", agent, "-f", promptFile}
 
 	// Create command
 	cmd := exec.Command(invokeScript, cmdArgs...)
 	cmd.Dir = folderPath
+
+	// Set AGENT_FULL_AUTO for execute mode since approval happened via PR workflow
+	fullAutoEnv := "0"
+	if inst.Mode == "execute" {
+		fullAutoEnv = "1"
+	}
 	cmd.Env = append(os.Environ(),
 		"AGENT_PRESET="+agent,
 		"AGENT_RECORDS_PATH="+w.recordsDir,
+		"AGENT_FULL_AUTO="+fullAutoEnv,
 	)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

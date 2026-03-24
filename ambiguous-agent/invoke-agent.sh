@@ -41,6 +41,7 @@ PRESET_claude_CMD="claude"
 PRESET_claude_PROMPT_FLAG="-p"
 PRESET_claude_ADD_DIR_FLAG="--add-dir"
 PRESET_claude_EXEC_ARGS="--permission-mode acceptEdits"
+PRESET_claude_EXEC_ARGS_FULL_AUTO="--dangerously-skip-permissions"
 
 # OpenCode
 PRESET_opencode_CMD="opencode run"
@@ -82,6 +83,7 @@ Environment:
   AGENT_RECORDS_PATH  Directory for records storage (default: $RECORDS_PATH)
   AGENT_PRESET        Default agent preset (overrides built-in default)
   AGENT_QUIET_CONTEXT Set to 1 to use minimal context prefix (path only)
+  AGENT_FULL_AUTO     Set to 1 for pre-approved execution (skips permission prompts)
 
 EOF
     exit 1
@@ -90,6 +92,17 @@ EOF
 get_preset_var() {
     local preset="$1"
     local var="$2"
+    local full_auto="${3:-false}"
+
+    # If full_auto mode and requesting EXEC_ARGS, check for _FULL_AUTO variant first
+    if [[ "$full_auto" == "true" && "$var" == "EXEC_ARGS" ]]; then
+        local full_auto_varname="PRESET_${preset}_${var}_FULL_AUTO"
+        if [[ -n "${!full_auto_varname:-}" ]]; then
+            echo "${!full_auto_varname}"
+            return
+        fi
+    fi
+
     local varname="PRESET_${preset}_${var}"
     echo "${!varname:-}"
 }
@@ -163,7 +176,8 @@ build_agent_command() {
     local mode="$2"
     local call_pwd="$3"
     local records_path="$4"
-    shift 4
+    local full_auto="$5"
+    shift 5
 
     local cmd
     cmd=$(get_preset_var "$preset" "CMD")
@@ -172,7 +186,10 @@ build_agent_command() {
     local add_dir_flag
     add_dir_flag=$(get_preset_var "$preset" "ADD_DIR_FLAG")
     local exec_args
-    exec_args=$(get_preset_var "$preset" "EXEC_ARGS")
+    # Use full-auto exec args if full_auto is enabled
+    local use_full_auto="false"
+    [[ "$full_auto" == "1" ]] && use_full_auto="true"
+    exec_args=$(get_preset_var "$preset" "EXEC_ARGS" "$use_full_auto")
 
     if [[ -z "$cmd" ]]; then
         echo "Error: Unknown preset '$preset'" >&2
@@ -226,6 +243,7 @@ PRESET="${AGENT_PRESET:-$DEFAULT_PRESET}"
 MODE=""
 SESSION_CONTEXT="false"
 PROMPT_FILE=""
+FULL_AUTO="${AGENT_FULL_AUTO:-0}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -240,6 +258,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -s|--session)
             SESSION_CONTEXT="true"
+            shift
+            ;;
+        --full-auto)
+            FULL_AUTO="1"
             shift
             ;;
         -f)
@@ -288,7 +310,7 @@ mkdir -p "$INVOCATION_DIR"
 gather_git_info "$CALL_PWD"
 
 # Use NUL-separated values to properly handle multi-line prompts
-mapfile -t -d '' cmd_parts < <(build_agent_command "$PRESET" "$MODE" "$CALL_PWD" "$RECORDS_PATH" "$@")
+mapfile -t -d '' cmd_parts < <(build_agent_command "$PRESET" "$MODE" "$CALL_PWD" "$RECORDS_PATH" "$FULL_AUTO" "$@")
 [[ ${#cmd_parts[@]} -eq 0 ]] && exit 1
 
 # Split the command into words (handles multi-word commands like "opencode run")
@@ -309,6 +331,7 @@ cat > "$INVOCATION_DIR/metadata.txt" <<EOF
 Date/Time:  $NOW_HUMAN
 Agent:      $PRESET (${cmd_parts[0]})
 Mode:       $MODE
+Full Auto:  $FULL_AUTO
 Session:    $SESSION_CONTEXT
 Prompt:     $*
 PWD:        $CALL_PWD

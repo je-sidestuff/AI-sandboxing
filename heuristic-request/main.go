@@ -222,39 +222,56 @@ func (w *HeuristicWatcher) buildHeuristicPrompt(heuristicContent string) string 
 
 ## Your Task
 
-Analyze the heuristic input and determine whether to create a DISPATCH or INSTRUCTION request.
+Analyze the heuristic input and determine the appropriate execution pattern. All dispatches go through an approval flow automatically before execution.
 
-- **DISPATCH**: Use when the task requires dispatch-level orchestration (e.g., creating branches, PRs, multi-step workflows)
-- **INSTRUCTION**: Use when the task is a direct instruction for an agent to execute
+## Dispatch Types (Execution Patterns)
 
-## Output Format
+### repo-isolation
+For tasks that modify a target repository. Work is done in an isolated clone, then submitted as a PR back to the target. Use when:
+- Adding features to a specific repo (e.g., "add email handling to agent-events")
+- Making changes to external repositories
+- Tasks that should be reviewed via PR before merging
 
-You MUST output exactly ONE of the following, wrapped in triple backticks with the filename:
-
-### Option 1: DISPATCH.md
-%smarkdown DISPATCH.md
-# Dispatch Instructions
-
-[Your dispatch instructions here in markdown format]
-%s
-
-### Option 2: DISPATCH.json
 %sjson DISPATCH.json
 {
-  "type": "direct",
-  "instruction": "Your instruction here",
+  "type": "repo-isolation",
+  "target_repo": "owner/repo-name",
+  "instruction": "What changes to make",
   "mode": "execute"
 }
 %s
 
-### Option 3: INSTRUCTION.md
-%smarkdown INSTRUCTION.md
-# Instructions
+### in-repo
+For tasks that work directly on a branch in the target repo (less isolation). Use when:
+- Quick fixes that don't need full isolation overhead
+- Working on the current repository
 
-[Your instructions here in markdown format]
+%sjson DISPATCH.json
+{
+  "type": "in-repo",
+  "target_repo": "owner/repo-name",
+  "instruction": "What changes to make",
+  "mode": "execute"
+}
 %s
 
-### Option 4: INSTRUCTION.json
+### direct
+For simple local tasks that don't modify external repos. Use when:
+- Local tasks, reports, or analysis
+- Tasks that don't create PRs
+
+%sjson DISPATCH.json
+{
+  "type": "direct",
+  "instruction": "The task to perform",
+  "mode": "execute"
+}
+%s
+
+## Alternate Output: INSTRUCTION
+
+If the task is a very simple instruction that doesn't need dispatch orchestration:
+
 %sjson INSTRUCTION.json
 {
   "instruction": "Your instruction here",
@@ -262,7 +279,16 @@ You MUST output exactly ONE of the following, wrapped in triple backticks with t
 }
 %s
 
-Choose the most appropriate format based on the heuristic input. Only output one file.
+## Guidelines
+
+- **repo-isolation**: Default choice for modifying repos. Phrases like "add a feature to X", "implement Y in Z repo"
+- **in-repo**: Use for quick fixes where isolation overhead isn't warranted
+- **direct**: Use for local tasks, reports, analysis that don't modify external repos
+- **INSTRUCTION**: Use for very simple prompts that don't need any orchestration
+- Infer repo owner when not specified: "agent-events" → "je-sidestuff/agent-events"
+- All dispatches go through approval automatically - you don't need to specify approval
+
+Output exactly ONE file wrapped in triple backticks with the filename.
 `, heuristicContent, "```", "```", "```", "```", "```", "```", "```", "```")
 }
 
