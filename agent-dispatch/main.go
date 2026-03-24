@@ -1456,6 +1456,18 @@ variable "instruction_mode" {
   type        = string
   default     = "execute"
 }
+
+variable "pr_title" {
+  description = "Optional title for the containment PR"
+  type        = string
+  default     = ""
+}
+
+variable "pr_body" {
+  description = "Optional body for the containment PR"
+  type        = string
+  default     = ""
+}
 `
 
 	// Get mode from dispatch, default to "execute"
@@ -1476,6 +1488,8 @@ variable "instruction_mode" {
   slopspaces_working_dir = "/workspaces/slopspaces/working/"
   instruction            = var.instruction
   instruction_mode       = var.instruction_mode
+  pr_title               = var.pr_title
+  pr_body                = var.pr_body
 }
 `, modulePath, isolationName, flowID, targetRepo)
 
@@ -1536,12 +1550,23 @@ output "reintegration_conclusion_state" {
 	escapedInstruction = strings.ReplaceAll(escapedInstruction, "\"", "\\\"")
 	escapedInstruction = strings.ReplaceAll(escapedInstruction, "\n", "\\n")
 
+	// Escape optional PR title and body for Terraform HCL
+	escapedPRTitle := strings.ReplaceAll(dispatch.PRTitle, "\\", "\\\\")
+	escapedPRTitle = strings.ReplaceAll(escapedPRTitle, "\"", "\\\"")
+	escapedPRTitle = strings.ReplaceAll(escapedPRTitle, "\n", "\\n")
+
+	escapedPRBody := strings.ReplaceAll(dispatch.PRBody, "\\", "\\\\")
+	escapedPRBody = strings.ReplaceAll(escapedPRBody, "\"", "\\\"")
+	escapedPRBody = strings.ReplaceAll(escapedPRBody, "\n", "\\n")
+
 	// Create terraform.tfvars with the PAT, owner, and instruction
 	tfvarsTF := fmt.Sprintf(`github_pat       = "%s"
 github_owner     = "%s"
 instruction      = "%s"
 instruction_mode = "%s"
-`, d.githubPAT, d.githubOwner, escapedInstruction, mode)
+pr_title         = "%s"
+pr_body          = "%s"
+`, d.githubPAT, d.githubOwner, escapedInstruction, mode, escapedPRTitle, escapedPRBody)
 
 	// Write all the files
 	files := map[string]string{
