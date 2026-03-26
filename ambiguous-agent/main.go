@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -47,6 +48,159 @@ var (
 	continuationStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("243"))
 )
+
+// ShellCompleter implements readline.AutoCompleter for the ambiguous shell.
+// It provides extensible tab-completion, currently supporting filepath completion.
+type ShellCompleter struct {
+	cwd *string // Pointer to track current working directory changes
+}
+
+// Do implements readline.AutoCompleter. It returns completion candidates for
+// the current line at the given position.
+func (c *ShellCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
+	lineStr := string(line[:pos])
+
+	// Extract the word being completed (last space-separated token)
+	lastSpace := strings.LastIndex(lineStr, " ")
+	var prefix string
+	if lastSpace == -1 {
+		prefix = lineStr
+	} else {
+		prefix = lineStr[lastSpace+1:]
+	}
+
+	// For now, use filepath completion for everything
+	// This can be extended later to add command-specific completers
+	candidates := completeFilepath(prefix, *c.cwd)
+
+	// Convert candidates to readline format
+	// length is how many characters to replace from the cursor position
+	length = len(prefix)
+	for _, cand := range candidates {
+		// Return only the suffix that completes the prefix
+		suffix := []rune(cand[len(prefix):])
+		newLine = append(newLine, suffix)
+	}
+
+	return newLine, length
+}
+
+// completeFilepath returns filepath completion candidates for the given prefix.
+// It handles absolute paths, relative paths, tilde expansion, and directory traversal.
+func completeFilepath(prefix string, cwd string) []string {
+	if prefix == "" {
+		// Complete from current directory
+		return listDir(cwd, "", true)
+	}
+
+	home := os.Getenv("HOME")
+
+	// Expand tilde
+	expandedPrefix := prefix
+	tildeExpanded := false
+	if strings.HasPrefix(prefix, "~/") {
+		expandedPrefix = filepath.Join(home, prefix[2:])
+		tildeExpanded = true
+	} else if prefix == "~" {
+		expandedPrefix = home
+		tildeExpanded = true
+	}
+
+	// Determine the directory to search and the partial filename
+	var searchDir, partial string
+	if filepath.IsAbs(expandedPrefix) {
+		searchDir = filepath.Dir(expandedPrefix)
+		partial = filepath.Base(expandedPrefix)
+	} else {
+		// Relative path
+		searchDir = filepath.Join(cwd, filepath.Dir(expandedPrefix))
+		partial = filepath.Base(expandedPrefix)
+	}
+
+	// Handle case where prefix ends with separator (completing inside a directory)
+	if strings.HasSuffix(expandedPrefix, string(filepath.Separator)) || expandedPrefix == home {
+		searchDir = expandedPrefix
+		partial = ""
+	}
+
+	// Get candidates from the directory
+	candidates := listDir(searchDir, partial, false)
+
+	// Convert back to original format (with tilde if needed)
+	var result []string
+	for _, cand := range candidates {
+		fullPath := filepath.Join(searchDir, cand)
+
+		// Check if it's a directory and append separator
+		if info, err := os.Stat(fullPath); err == nil && info.IsDir() {
+			cand += string(filepath.Separator)
+		}
+
+		// Build the completion string
+		var completion string
+		if tildeExpanded {
+			// Convert back to tilde notation
+			if strings.HasPrefix(fullPath, home) {
+				completion = "~" + fullPath[len(home):]
+			} else {
+				completion = fullPath
+			}
+		} else if filepath.IsAbs(prefix) || strings.Contains(prefix, string(filepath.Separator)) {
+			// Preserve the original path structure
+			dir := filepath.Dir(prefix)
+			if strings.HasSuffix(prefix, string(filepath.Separator)) {
+				completion = prefix + cand
+			} else {
+				completion = filepath.Join(dir, cand)
+			}
+			// Re-add trailing separator for directories
+			if info, err := os.Stat(fullPath); err == nil && info.IsDir() && !strings.HasSuffix(completion, string(filepath.Separator)) {
+				completion += string(filepath.Separator)
+			}
+		} else {
+			completion = cand
+			// Add trailing separator for directories
+			if info, err := os.Stat(fullPath); err == nil && info.IsDir() && !strings.HasSuffix(completion, string(filepath.Separator)) {
+				completion += string(filepath.Separator)
+			}
+		}
+
+		result = append(result, completion)
+	}
+
+	return result
+}
+
+// listDir returns entries in dir that start with prefix.
+// If showHidden is false, entries starting with '.' are excluded unless prefix starts with '.'.
+func listDir(dir string, prefix string, showHidden bool) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	showDotFiles := showHidden || strings.HasPrefix(prefix, ".")
+
+	var result []string
+	for _, entry := range entries {
+		name := entry.Name()
+
+		// Skip hidden files unless explicitly requested
+		if !showDotFiles && strings.HasPrefix(name, ".") {
+			continue
+		}
+
+		// Filter by prefix
+		if prefix != "" && !strings.HasPrefix(name, prefix) {
+			continue
+		}
+
+		result = append(result, name)
+	}
+
+	sort.Strings(result)
+	return result
+}
 
 // CommandRecord holds metadata for each command
 type CommandRecord struct {
@@ -98,11 +252,15 @@ func main() {
 	cwd, _ := os.Getwd()
 	oldCwd := cwd // For cd - support
 
+	// Create completer with pointer to cwd so it tracks directory changes
+	completer := &ShellCompleter{cwd: &cwd}
+
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          buildPrompt(cwd, currentAgent),
 		HistoryFile:     readlineRecords,
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
+		AutoComplete:    completer,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error initializing readline: %v\n", err)

@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Scribe - Voice to Heuristic</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="page-container">
+        <div class="container">
+            <h1>Agent Scribe</h1>
+            <p class="subtitle">Voice transcription to heuristic intake</p>
+            <div class="auth-section">
+                <label for="tokenInput">JWT Token:</label>
+                <input type="text" id="tokenInput" placeholder="Paste your JWT token here">
+                <button id="connectButton">Connect</button>
+                <span id="connectionStatus">Not connected</span>
+            </div>
+            <div class="status">
+                Status: <span id="statusText">Not recording</span> <span id="statusIndicator"></span>
+            </div>
+            <div class="button-container">
+                <button id="startButton" disabled>Start Transcription</button>
+                <button id="stopButton" disabled>Stop Transcription</button>
+                <button id="clearButton">Clear Transcript</button>
+                <button id="saveButton" disabled>Save to Heuristic</button>
+            </div>
+            <div id="transcript"></div>
+            <div id="saveStatus"></div>
+
+            <div class="text-input-section">
+                <h2>Direct Text Input</h2>
+                <p>Enter text directly to create a heuristic request:</p>
+                <textarea id="textInput" placeholder="Enter your heuristic request here..."></textarea>
+                <div class="text-button-container">
+                    <button id="textSaveButton" disabled>Save to Heuristic</button>
+                </div>
+                <div id="textSaveStatus"></div>
+            </div>
+
+            <div class="info-section">
+                <h2>How to use:</h2>
+                <ul>
+                    <li>Paste your JWT token in the input field and click "Connect".</li>
+                    <li>Once connected, click "Start Transcription" to begin recording.</li>
+                    <li>Speak clearly into your microphone.</li>
+                    <li>Watch as your speech is transcribed in real-time.</li>
+                    <li>Click "Stop Transcription" when you're done.</li>
+                    <li>Click "Save to Heuristic" to submit your transcription for processing.</li>
+                    <li>Use "Clear Transcript" to remove all transcribed text.</li>
+                </ul>
+                <h2>Heuristic Format:</h2>
+                <p>Your transcription will be saved with:</p>
+                <ul>
+                    <li><strong>Prelude:</strong> "In je-sidestuff/AI-sandboxing - "</li>
+                    <li><strong>Your transcription</strong></li>
+                    <li><strong>Postlude:</strong> " Use repo-isolation to avoid interfering with the target repo."</li>
+                </ul>
+            </div>
+            <div class="footer">
+                <p>Agent Scribe - Part of AI-sandboxing</p>
+            </div>
+        </div>
+    </div>
+    <script>
+        let socket = null;
+        let audioContext;
+        let audioInput;
+        let processor;
+        const tokenInput = document.getElementById('tokenInput');
+        const connectButton = document.getElementById('connectButton');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const clearButton = document.getElementById('clearButton');
+        const saveButton = document.getElementById('saveButton');
+        const statusText = document.getElementById('statusText');
+        const statusIndicator = document.getElementById('statusIndicator');
+        const transcript = document.getElementById('transcript');
+        const saveStatus = document.getElementById('saveStatus');
+        const textInput = document.getElementById('textInput');
+        const textSaveButton = document.getElementById('textSaveButton');
+        const textSaveStatus = document.getElementById('textSaveStatus');
+
+        let currentTranscript = '';
+        let lastFinalIndex = 0;
+
+        connectButton.addEventListener('click', connectToServer);
+        startButton.addEventListener('click', startRecording);
+        stopButton.addEventListener('click', stopRecording);
+        clearButton.addEventListener('click', clearTranscript);
+        saveButton.addEventListener('click', saveTranscription);
+        textSaveButton.addEventListener('click', saveTextInput);
+
+        // Auto-fetch token and connect on page load
+        window.addEventListener('load', async () => {
+            try {
+                const response = await fetch('/api/token');
+                const data = await response.json();
+                tokenInput.value = data.token;
+                connectToServer();
+            } catch (error) {
+                console.error('Failed to fetch token:', error);
+                connectionStatus.textContent = 'Failed to fetch token';
+                connectionStatus.className = 'status-error';
+            }
+        });
+
+        function connectToServer() {
+            const token = tokenInput.value.trim();
+
+            if (!token) {
+                alert('Please enter a JWT token');
+                return;
+            }
+
+            // Disconnect existing socket if any
+            if (socket) {
+                socket.disconnect();
+            }
+
+            // Connect with JWT token
+            socket = io({
+                auth: {
+                    token: token
+                }
+            });
+
+            socket.on('connect', () => {
+                console.log('Connected to server');
+                connectionStatus.textContent = 'Connected';
+                connectionStatus.className = 'status-connected';
+                startButton.disabled = false;
+                stopButton.disabled = false;
+                saveButton.disabled = false;
+                textSaveButton.disabled = false;
+                connectButton.textContent = 'Reconnect';
+            });
+
+            socket.on('connect_error', (error) => {
+                console.error('Connection error:', error.message);
+                connectionStatus.textContent = 'Connection failed: ' + error.message;
+                connectionStatus.className = 'status-error';
+                startButton.disabled = true;
+                stopButton.disabled = true;
+                saveButton.disabled = true;
+                textSaveButton.disabled = true;
+            });
+
+            socket.on('disconnect', () => {
+                console.log('Disconnected from server');
+                connectionStatus.textContent = 'Disconnected';
+                connectionStatus.className = 'status-disconnected';
+                startButton.disabled = true;
+                stopButton.disabled = true;
+                saveButton.disabled = true;
+                textSaveButton.disabled = true;
+            });
+
+            setupSocketListeners();
+        }
+
+        function setupSocketListeners() {
+            socket.on('transcription', data => {
+                console.log('Received transcription:', data);
+                if (data.isFinal) {
+                    currentTranscript += data.text + ' ';
+                    lastFinalIndex = currentTranscript.length;
+                } else {
+                    const partialTranscript = currentTranscript + data.text;
+                    transcript.textContent = partialTranscript;
+                }
+                transcript.textContent = currentTranscript;
+            });
+
+            socket.on('error', errorMessage => {
+                console.error('Server error:', errorMessage);
+                transcript.textContent += '\nError: ' + errorMessage;
+            });
+
+            socket.on('saveResult', result => {
+                if (result.success) {
+                    saveStatus.textContent = 'Saved successfully to: ' + result.filePath;
+                    saveStatus.className = 'save-success';
+                    // Clear the transcript display after successful save
+                    currentTranscript = '';
+                    lastFinalIndex = 0;
+                    transcript.textContent = '';
+                } else {
+                    saveStatus.textContent = 'Save failed: ' + result.error;
+                    saveStatus.className = 'save-error';
+                }
+                // Clear the save status after a few seconds
+                setTimeout(() => {
+                    saveStatus.textContent = '';
+                    saveStatus.className = '';
+                }, 5000);
+            });
+
+            socket.on('textSaveResult', result => {
+                if (result.success) {
+                    textSaveStatus.textContent = 'Saved successfully to: ' + result.filePath;
+                    textSaveStatus.className = 'save-success';
+                    textInput.value = '';
+                } else {
+                    textSaveStatus.textContent = 'Save failed: ' + result.error;
+                    textSaveStatus.className = 'save-error';
+                }
+                setTimeout(() => {
+                    textSaveStatus.textContent = '';
+                    textSaveStatus.className = '';
+                }, 5000);
+            });
+        }
+
+        function updateStatus(status) {
+            console.log('Status updated:', status);
+            statusText.textContent = status;
+            statusIndicator.className = status === 'Recording' ? 'recording' : '';
+        }
+
+        async function startRecording() {
+            console.log('Start button clicked');
+
+            if (!socket || !socket.connected) {
+                alert('Please connect to the server first');
+                return;
+            }
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                console.log('Microphone access granted');
+                audioContext = new AudioContext();
+                audioInput = audioContext.createMediaStreamSource(stream);
+                processor = audioContext.createScriptProcessor(1024, 1, 1);
+                audioInput.connect(processor);
+                processor.connect(audioContext.destination);
+
+                processor.onaudioprocess = (e) => {
+                    const float32Array = e.inputBuffer.getChannelData(0);
+                    const int16Array = new Int16Array(float32Array.length);
+                    for (let i = 0; i < float32Array.length; i++) {
+                        int16Array[i] = Math.max(-32768, Math.min(32767, Math.floor(float32Array[i] * 32768)));
+                    }
+                    console.log('Sending audio chunk to server, size:', int16Array.buffer.byteLength);
+                    socket.emit('audioData', int16Array.buffer);
+                };
+
+                socket.emit('startTranscription');
+                console.log('startTranscription event emitted');
+                updateStatus('Recording');
+            } catch (error) {
+                console.error('Error accessing microphone:', error);
+                updateStatus('Error: ' + error.message);
+            }
+        }
+
+        function stopRecording() {
+            console.log('Stop button clicked');
+            if (audioContext && audioContext.state !== 'closed') {
+                audioInput.disconnect();
+                processor.disconnect();
+                audioContext.close();
+                socket.emit('stopTranscription');
+                updateStatus('Not recording');
+            }
+        }
+
+        function clearTranscript() {
+            console.log('Clear button clicked');
+            currentTranscript = '';
+            lastFinalIndex = 0;
+            transcript.textContent = '';
+            saveStatus.textContent = '';
+            saveStatus.className = '';
+        }
+
+        function saveTranscription() {
+            console.log('Save button clicked');
+            if (!socket || !socket.connected) {
+                alert('Please connect to the server first');
+                return;
+            }
+            if (!currentTranscript.trim()) {
+                alert('No transcription to save');
+                return;
+            }
+            saveStatus.textContent = 'Saving...';
+            saveStatus.className = 'save-pending';
+            socket.emit('saveTranscription');
+        }
+
+        function saveTextInput() {
+            console.log('Text save button clicked');
+            if (!socket || !socket.connected) {
+                alert('Please connect to the server first');
+                return;
+            }
+            const text = textInput.value.trim();
+            if (!text) {
+                alert('No text to save');
+                return;
+            }
+            textSaveStatus.textContent = 'Saving...';
+            textSaveStatus.className = 'save-pending';
+            socket.emit('saveTextInput', text);
+        }
+
+        console.log('Client-side script loaded');
+    </script>
+</body>
+</html>

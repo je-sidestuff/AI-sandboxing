@@ -63,4 +63,3 @@ variable "instruction_mode" {
   type        = string
   default     = "execute"
 }
-

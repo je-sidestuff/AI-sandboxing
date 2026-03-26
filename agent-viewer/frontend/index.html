@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Agent Viewer</title>
+  <title>Agent Viewer - Flows</title>
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -26,6 +26,8 @@
       --red: #f85149;
       --orange: #e3b341;
       --purple: #bc8cff;
+      --cyan: #67e8f9;
+      --pink: #f472b6;
       --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
       --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     }
@@ -46,23 +48,16 @@
       background: var(--bg1);
       border-bottom: 1px solid var(--border);
       padding: 0 16px;
-      height: 44px;
+      height: 48px;
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 16px;
       flex-shrink: 0;
-      z-index: 10;
     }
     .header-title {
-      font-size: 14px;
+      font-size: 15px;
       font-weight: 600;
       color: var(--text);
-      letter-spacing: -0.01em;
-    }
-    .header-subtitle {
-      font-size: 12px;
-      color: var(--text-muted);
-      font-family: var(--font-mono);
     }
     .header-spacer { flex: 1; }
     .ws-indicator {
@@ -73,8 +68,8 @@
       color: var(--text-muted);
     }
     .ws-dot {
-      width: 7px;
-      height: 7px;
+      width: 8px;
+      height: 8px;
       border-radius: 50%;
       background: var(--text-dim);
     }
@@ -82,6 +77,22 @@
     .ws-dot.error { background: var(--red); }
     .ws-dot.connecting { background: var(--yellow); animation: pulse 1s infinite; }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+    .btn {
+      padding: 5px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg2);
+      color: var(--text-muted);
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn:hover { background: var(--bg3); color: var(--text); border-color: var(--accent); }
+    .btn-primary { background: var(--accent-dim); border-color: var(--accent); color: var(--text); }
 
     /* Layout */
     .layout {
@@ -92,46 +103,45 @@
 
     /* Sidebar */
     .sidebar {
-      width: 280px;
-      min-width: 200px;
+      width: 320px;
+      min-width: 280px;
       border-right: 1px solid var(--border);
       display: flex;
       flex-direction: column;
       background: var(--bg1);
       flex-shrink: 0;
     }
-    .sidebar-tabs {
-      display: flex;
+
+    .sidebar-header {
+      padding: 12px;
       border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
-    .sidebar-tab {
-      flex: 1;
-      padding: 10px 8px;
+    .sidebar-title {
       font-size: 12px;
-      font-weight: 500;
+      font-weight: 600;
       color: var(--text-muted);
-      cursor: pointer;
-      border: none;
-      background: none;
-      border-bottom: 2px solid transparent;
-      transition: color 0.15s, border-color 0.15s;
-      text-align: center;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
     }
-    .sidebar-tab:hover { color: var(--text); }
-    .sidebar-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .flow-count {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-left: auto;
+    }
 
     .sidebar-filters {
-      padding: 8px;
+      padding: 8px 12px;
       border-bottom: 1px solid var(--border);
       display: flex;
       flex-wrap: wrap;
-      gap: 4px;
-      flex-shrink: 0;
+      gap: 6px;
     }
     .filter-chip {
-      padding: 2px 8px;
-      border-radius: 20px;
+      padding: 3px 10px;
+      border-radius: 12px;
       font-size: 11px;
       cursor: pointer;
       border: 1px solid var(--border);
@@ -142,121 +152,333 @@
     .filter-chip:hover { border-color: var(--accent); color: var(--accent); }
     .filter-chip.active { background: var(--accent-dim); border-color: var(--accent); color: var(--text); }
 
-    .session-list {
+    .flow-list {
       flex: 1;
       overflow-y: auto;
       padding: 4px 0;
     }
-    .session-list::-webkit-scrollbar { width: 4px; }
-    .session-list::-webkit-scrollbar-track { background: transparent; }
-    .session-list::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 2px; }
+    .flow-list::-webkit-scrollbar { width: 6px; }
+    .flow-list::-webkit-scrollbar-track { background: transparent; }
+    .flow-list::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 3px; }
 
-    .session-item {
-      padding: 8px 12px;
+    /* Flow Card */
+    .flow-card {
+      padding: 12px;
+      margin: 4px 8px;
       cursor: pointer;
-      border-left: 3px solid transparent;
-      transition: background 0.1s, border-color 0.1s;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      background: var(--bg2);
+      transition: all 0.15s;
     }
-    .session-item:hover { background: var(--bg2); }
-    .session-item.selected { background: var(--bg2); border-left-color: var(--accent); }
-    .session-item-id {
+    .flow-card:hover { border-color: var(--border); background: var(--bg3); }
+    .flow-card.selected { border-color: var(--accent); background: var(--bg3); }
+    .flow-card.updated { animation: cardFlash 1s ease-out; }
+    @keyframes cardFlash { 0% { border-color: var(--accent); box-shadow: 0 0 8px rgba(88, 166, 255, 0.3); } }
+
+    .flow-card-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .flow-id {
       font-size: 11px;
       font-family: var(--font-mono);
       color: var(--text);
-      white-space: nowrap;
+      flex: 1;
       overflow: hidden;
       text-overflow: ellipsis;
+      white-space: nowrap;
     }
-    .session-item-meta {
-      display: flex;
-      gap: 6px;
-      margin-top: 3px;
-      align-items: center;
-    }
-    .badge {
-      padding: 1px 5px;
-      border-radius: 3px;
-      font-size: 10px;
-      font-weight: 500;
-      line-height: 1.4;
-    }
-    .badge-input    { background: #1f3d2e; color: #3fb950; }
-    .badge-heuristic { background: #2d1f3d; color: #bc8cff; }
-    .badge-output   { background: #2d2a1f; color: #e3b341; }
-    .badge-working  { background: #1f2d3d; color: #79c0ff; }
-    .badge-requests { background: #3d1f1f; color: #f87171; }
-    .badge-dispatcher { background: #1f2d2d; color: #67e8f9; }
-    .badge-session  { background: #2d1f2d; color: #f0abfc; }
-    .badge-invocation { background: #2d2a1f; color: #fcd34d; }
-    .badge-worker   { background: #1f2d2d; color: #6ee7b7; }
-    .badge-pending  { background: #3d2b1f; color: var(--orange); }
-    .badge-active   { background: #1f3420; color: var(--green); }
-    .badge-complete { background: #1f2d3d; color: var(--accent); }
-    .badge-live     { background: #3d1f20; color: var(--red); }
-    .badge-type     { background: var(--bg3); color: var(--text-muted); }
-
-    .session-item-time {
+    .flow-time {
       font-size: 10px;
       color: var(--text-dim);
-      margin-left: auto;
+      flex-shrink: 0;
     }
+
+    .flow-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+
+    .badge {
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 500;
+      line-height: 1.3;
+    }
+    /* State badges */
+    .badge-pending { background: #3d2b1f; color: var(--orange); }
+    .badge-processing { background: #2d2a1f; color: #fcd34d; }
+    .badge-proposed { background: #2d1f3d; color: var(--purple); }
+    .badge-approved { background: #1f3d2e; color: var(--green); }
+    .badge-executing { background: #1f2d3d; color: var(--accent); }
+    .badge-isolated { background: #3d1f2d; color: var(--pink); }
+    .badge-revising { background: #3d2d1f; color: #fbbf24; }
+    .badge-reintegrating { background: #1f2d2d; color: var(--cyan); }
+    .badge-merged { background: #1f3d2e; color: var(--green); }
+    .badge-closed { background: #3d2b1f; color: #fb923c; }
+    .badge-failed { background: #3d1f1f; color: var(--red); }
+    .badge-complete { background: #1f3d2e; color: var(--green); }
+    /* Type badges */
+    .badge-direct { background: #1f3d2e; color: #34d399; }
+    .badge-in-repo { background: #2d2a1f; color: #fcd34d; }
+    .badge-repo-isolation { background: #3d1f2d; color: var(--pink); }
+    .badge-unknown { background: var(--bg3); color: var(--text-dim); }
+
+    .flow-instruction {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.4;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      margin-bottom: 8px;
+    }
+
+    /* Stage Pipeline */
+    .stage-pipeline {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 4px;
+    }
+    .stage-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--bg3);
+      transition: all 0.2s;
+    }
+    .stage-dot.pending { background: var(--text-dim); }
+    .stage-dot.active { background: var(--accent); animation: stagePulse 1.5s infinite; }
+    .stage-dot.completed { background: var(--green); }
+    .stage-dot.failed { background: var(--red); }
+    .stage-dot.skipped { background: var(--text-dim); opacity: 0.5; }
+    @keyframes stagePulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.2); } }
+    .stage-connector {
+      width: 12px;
+      height: 2px;
+      background: var(--bg3);
+    }
+    .stage-connector.completed { background: var(--green); }
 
     /* Detail Panel */
     .detail-panel {
       flex: 1;
       display: flex;
+      flex-direction: column;
       overflow: hidden;
     }
-    .detail-meta {
-      width: 240px;
-      flex-shrink: 0;
-      border-right: 1px solid var(--border);
+
+    .detail-empty {
       display: flex;
       flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 12px;
+      color: var(--text-dim);
+    }
+    .detail-empty-icon { font-size: 48px; opacity: 0.3; }
+    .detail-empty-text { font-size: 14px; }
+
+    .detail-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
       background: var(--bg1);
     }
-    .detail-meta-header {
-      padding: 12px;
-      border-bottom: 1px solid var(--border);
-    }
-    .detail-meta-title {
-      font-size: 12px;
+    .detail-id {
+      font-size: 14px;
+      font-family: var(--font-mono);
       font-weight: 600;
       color: var(--text);
-      word-break: break-all;
-      font-family: var(--font-mono);
+      margin-bottom: 8px;
     }
-    .detail-meta-badges {
+    .detail-badges {
       display: flex;
       flex-wrap: wrap;
-      gap: 4px;
-      margin-top: 6px;
+      gap: 6px;
+      margin-bottom: 12px;
     }
-    .detail-meta-path {
+    .detail-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .detail-meta-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .detail-meta-label { color: var(--text-dim); }
+    .detail-meta-value { color: var(--text); font-family: var(--font-mono); font-size: 11px; }
+    .detail-meta-link { color: var(--accent); text-decoration: none; }
+    .detail-meta-link:hover { text-decoration: underline; }
+
+    /* Stage Timeline */
+    .stage-timeline {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg1);
+    }
+    .stage-timeline-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 12px;
+    }
+    .timeline-stages {
+      display: flex;
+      align-items: center;
+      gap: 0;
+    }
+    .timeline-stage {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      flex: 1;
+      position: relative;
+      cursor: pointer;
+      padding: 8px 4px;
+      border-radius: 6px;
+      transition: background 0.15s;
+    }
+    .timeline-stage:hover { background: var(--bg2); }
+    .timeline-stage.selected { background: var(--bg2); }
+    .timeline-stage-dot {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--bg3);
+      border: 2px solid var(--bg3);
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 8px;
+      color: var(--bg0);
+    }
+    .timeline-stage-dot.pending { background: var(--text-dim); border-color: var(--text-dim); }
+    .timeline-stage-dot.active { background: var(--accent); border-color: var(--accent); animation: dotPulse 1.5s infinite; }
+    .timeline-stage-dot.completed { background: var(--green); border-color: var(--green); }
+    .timeline-stage-dot.failed { background: var(--red); border-color: var(--red); }
+    @keyframes dotPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(88, 166, 255, 0.4); } 50% { box-shadow: 0 0 0 6px rgba(88, 166, 255, 0); } }
+    .timeline-stage-name {
+      font-size: 10px;
+      color: var(--text-muted);
+      text-transform: capitalize;
+    }
+    .timeline-stage.selected .timeline-stage-name { color: var(--accent); }
+    .timeline-connector {
+      flex: 1;
+      height: 2px;
+      background: var(--bg3);
+      margin: 0 -4px;
+      margin-top: -20px;
+      position: relative;
+      z-index: 0;
+    }
+    .timeline-connector.completed { background: var(--green); }
+
+    /* Stage Detail */
+    .stage-detail {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg1);
+    }
+    .stage-detail-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .stage-detail-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      text-transform: capitalize;
+    }
+    .stage-detail-status {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+    .stage-detail-pr {
+      margin-top: 12px;
+      padding: 12px;
+      background: var(--bg2);
+      border-radius: 6px;
+      border: 1px solid var(--border);
+    }
+    .stage-detail-pr-label {
       font-size: 10px;
       color: var(--text-dim);
-      font-family: var(--font-mono);
-      margin-top: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+    .stage-detail-pr-link {
+      font-size: 12px;
+      color: var(--accent);
+      text-decoration: none;
       word-break: break-all;
     }
-    .file-list {
-      flex: 1;
-      overflow-y: auto;
-      padding: 4px 0;
+    .stage-detail-pr-link:hover { text-decoration: underline; }
+    .stage-detail-pr-state {
+      margin-top: 6px;
+      font-size: 11px;
     }
-    .file-list::-webkit-scrollbar { width: 4px; }
-    .file-list::-webkit-scrollbar-thumb { background: var(--bg3); }
+
+    /* Files Panel */
+    .files-panel {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+    .file-list {
+      width: 260px;
+      border-right: 1px solid var(--border);
+      background: var(--bg1);
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+    .file-list::-webkit-scrollbar { width: 6px; }
+    .file-list::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 3px; }
+    .file-list-header {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
     .file-item {
-      padding: 6px 12px;
+      padding: 8px 12px;
       cursor: pointer;
       display: flex;
       align-items: center;
       gap: 8px;
-      transition: background 0.1s;
       border-left: 2px solid transparent;
+      transition: all 0.1s;
     }
     .file-item:hover { background: var(--bg2); }
     .file-item.selected { background: var(--bg2); border-left-color: var(--accent); }
+    .file-item.updated { animation: fileFlash 1s ease-out; }
+    @keyframes fileFlash { 0% { background: rgba(88, 166, 255, 0.15); } }
     .file-icon { font-size: 12px; flex-shrink: 0; }
     .file-name {
       font-size: 11px;
@@ -272,11 +494,6 @@
       color: var(--text-dim);
       flex-shrink: 0;
     }
-    .file-item.updated { animation: flash 1s ease-out; }
-    @keyframes flash {
-      0% { background: rgba(88, 166, 255, 0.2); }
-      100% { background: transparent; }
-    }
 
     /* Content Viewer */
     .content-viewer {
@@ -286,27 +503,31 @@
       overflow: hidden;
     }
     .content-toolbar {
-      padding: 8px 12px;
+      padding: 10px 16px;
       border-bottom: 1px solid var(--border);
+      background: var(--bg1);
       display: flex;
       align-items: center;
-      gap: 8px;
-      background: var(--bg1);
-      flex-shrink: 0;
+      gap: 10px;
     }
     .content-filename {
       font-size: 12px;
       font-family: var(--font-mono);
       color: var(--text);
     }
+    .content-meta {
+      margin-left: auto;
+      font-size: 11px;
+      color: var(--text-dim);
+    }
     .content-body {
       flex: 1;
       overflow: auto;
-      padding: 12px 16px;
+      padding: 16px;
       background: var(--bg0);
     }
-    .content-body::-webkit-scrollbar { width: 6px; height: 6px; }
-    .content-body::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 3px; }
+    .content-body::-webkit-scrollbar { width: 8px; height: 8px; }
+    .content-body::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 4px; }
     .content-pre {
       font-family: var(--font-mono);
       font-size: 12px;
@@ -315,17 +536,6 @@
       word-break: break-word;
       color: var(--text);
     }
-    .empty-state {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100%;
-      gap: 8px;
-      color: var(--text-dim);
-    }
-    .empty-state-icon { font-size: 32px; opacity: 0.5; }
-    .empty-state-text { font-size: 13px; }
 
     /* JSON syntax highlighting */
     .json-key    { color: #79c0ff; }
@@ -334,82 +544,64 @@
     .json-bool   { color: #ff7b72; }
     .json-null   { color: #ff7b72; }
 
-    /* Live Feed */
-    .live-feed {
+    /* Event Feed */
+    .event-feed {
+      height: 140px;
       border-top: 1px solid var(--border);
       background: var(--bg1);
       flex-shrink: 0;
-      transition: height 0.2s;
+      display: flex;
+      flex-direction: column;
     }
-    .live-feed-header {
-      padding: 6px 12px;
+    .event-feed.collapsed { height: 36px; }
+    .event-feed-header {
+      padding: 8px 16px;
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
       cursor: pointer;
-      user-select: none;
-      border-bottom: 1px solid transparent;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
     }
-    .live-feed.expanded .live-feed-header {
-      border-bottom-color: var(--border);
-    }
-    .live-feed-title {
+    .event-feed-title {
       font-size: 11px;
       font-weight: 600;
       color: var(--text-muted);
       text-transform: uppercase;
       letter-spacing: 0.05em;
     }
-    .live-badge {
-      padding: 1px 5px;
+    .event-badge {
+      padding: 1px 6px;
       border-radius: 10px;
       font-size: 10px;
-      background: var(--red);
-      color: white;
-      animation: pulse 2s infinite;
+      background: var(--accent-dim);
+      color: var(--text);
     }
-    .live-feed-toggle { margin-left: auto; color: var(--text-dim); font-size: 10px; }
+    .event-toggle { margin-left: auto; color: var(--text-dim); font-size: 11px; }
     .event-scroll {
-      height: 120px;
+      flex: 1;
       overflow-y: auto;
       padding: 4px 0;
     }
-    .event-scroll::-webkit-scrollbar { width: 4px; }
-    .event-scroll::-webkit-scrollbar-thumb { background: var(--bg3); }
+    .event-scroll::-webkit-scrollbar { width: 6px; }
+    .event-scroll::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 3px; }
     .event-row {
-      padding: 2px 12px;
+      padding: 3px 16px;
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
       font-family: var(--font-mono);
       font-size: 11px;
-      animation: slideIn 0.2s ease-out;
+      animation: slideIn 0.15s ease-out;
     }
-    @keyframes slideIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; } }
-    .event-time { color: var(--text-dim); flex-shrink: 0; width: 68px; }
-    .event-op {
-      flex-shrink: 0;
-      width: 48px;
-      font-weight: 500;
-    }
+    @keyframes slideIn { from { opacity: 0; transform: translateY(-4px); } }
+    .event-time { color: var(--text-dim); width: 70px; flex-shrink: 0; }
+    .event-op { width: 50px; flex-shrink: 0; font-weight: 500; }
     .op-create { color: var(--green); }
-    .op-write  { color: var(--accent); }
+    .op-write { color: var(--accent); }
     .op-remove { color: var(--red); }
     .op-rename { color: var(--orange); }
     .event-path { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-    /* Refresh button */
-    .btn {
-      padding: 3px 8px;
-      border-radius: 4px;
-      border: 1px solid var(--border);
-      background: var(--bg2);
-      color: var(--text-muted);
-      font-size: 11px;
-      cursor: pointer;
-      transition: all 0.1s;
-    }
-    .btn:hover { background: var(--bg3); color: var(--text); }
   </style>
 </head>
 <body>
@@ -432,45 +624,64 @@
     }
 
     function fmtSize(bytes) {
+      if (!bytes) return '';
       if (bytes < 1024) return `${bytes}B`;
       if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}K`;
       return `${(bytes / 1024 / 1024).toFixed(1)}M`;
     }
 
     function fileIcon(name) {
+      if (!name) return '·';
       if (name.endsWith('.json')) return '{}';
-      if (name.endsWith('.md'))   return '📝';
-      if (name.endsWith('.txt'))  return '📄';
-      if (name.endsWith('.tf'))   return '🔧';
-      if (name.endsWith('.sh'))   return '⚙';
-      if (name.endsWith('.log'))  return '📋';
+      if (name.endsWith('.md')) return 'M';
+      if (name.endsWith('.txt')) return 'T';
+      if (name.endsWith('.tf')) return 'tf';
+      if (name.endsWith('.sh')) return '$';
+      if (name.endsWith('.log')) return 'L';
       return '·';
     }
 
-    function categoryBadgeClass(cat) {
-      const map = {
-        input: 'badge-input', heuristic: 'badge-heuristic', output: 'badge-output',
-        working: 'badge-working', requests: 'badge-requests', dispatcher: 'badge-dispatcher',
-        session: 'badge-session', invocation: 'badge-invocation', worker: 'badge-worker',
+    function stateDisplayName(state) {
+      const names = {
+        pending: 'Pending',
+        processing: 'Processing',
+        proposed: 'Proposed',
+        approved: 'Approved',
+        executing: 'Executing',
+        isolated: 'In Review',
+        revising: 'Revising',
+        reintegrating: 'Reintegrating',
+        merged: 'Merged',
+        closed: 'Closed',
+        failed: 'Failed',
+        complete: 'Complete',
       };
-      return map[cat] || 'badge-type';
+      return names[state] || state;
     }
 
-    function statusBadgeClass(status) {
-      const map = {
-        pending: 'badge-pending', active: 'badge-active', complete: 'badge-complete', live: 'badge-live',
-        processed: 'badge-complete', session: 'badge-session',
+    function typeDisplayName(type) {
+      const names = {
+        direct: 'Direct',
+        'in-repo': 'In-Repo',
+        'repo-isolation': 'Repo Isolation',
+        unknown: 'Unknown',
       };
-      return map[status] || 'badge-type';
+      return names[type] || type;
     }
 
     // ── JSON Renderer ─────────────────────────────────────────────────────────
 
-    function JsonValue({ val }) {
+    function JsonValue({ val, depth = 0 }) {
+      const indent = '  '.repeat(depth);
+
       if (val === null) return <span className="json-null">null</span>;
       if (typeof val === 'boolean') return <span className="json-bool">{String(val)}</span>;
       if (typeof val === 'number') return <span className="json-number">{val}</span>;
-      if (typeof val === 'string') return <span className="json-string">"{val}"</span>;
+      if (typeof val === 'string') {
+        // Truncate very long strings
+        const displayVal = val.length > 500 ? val.slice(0, 500) + '...' : val;
+        return <span className="json-string">"{displayVal}"</span>;
+      }
       if (Array.isArray(val)) {
         if (val.length === 0) return <span>[]</span>;
         return (
@@ -478,10 +689,10 @@
             {'[\n'}
             {val.map((v, i) => (
               <span key={i}>
-                {'  '}<JsonValue val={v} />{i < val.length - 1 ? ',' : ''}{'\n'}
+                {indent}{'  '}<JsonValue val={v} depth={depth + 1} />{i < val.length - 1 ? ',' : ''}{'\n'}
               </span>
             ))}
-            {']'}
+            {indent}{']'}
           </span>
         );
       }
@@ -493,29 +704,25 @@
             {'{\n'}
             {keys.map((k, i) => (
               <span key={k}>
-                {'  '}<span className="json-key">"{k}"</span>{': '}<JsonValue val={val[k]} />{i < keys.length - 1 ? ',' : ''}{'\n'}
+                {indent}{'  '}<span className="json-key">"{k}"</span>{': '}<JsonValue val={val[k]} depth={depth + 1} />{i < keys.length - 1 ? ',' : ''}{'\n'}
               </span>
             ))}
-            {'}'}
+            {indent}{'}'}
           </span>
         );
       }
       return <span>{String(val)}</span>;
     }
 
-    function FileContentView({ filename, content }) {
+    function FileContent({ filename, content }) {
       if (!content) return null;
 
-      if (filename && filename.endsWith('.json')) {
+      if (filename?.endsWith('.json')) {
         try {
           const parsed = JSON.parse(content);
-          return (
-            <pre className="content-pre">
-              <JsonValue val={parsed} />
-            </pre>
-          );
+          return <pre className="content-pre"><JsonValue val={parsed} /></pre>;
         } catch {
-          // fall through to plain text
+          // Fall through to plain text
         }
       }
       return <pre className="content-pre">{content}</pre>;
@@ -523,163 +730,326 @@
 
     // ── Components ────────────────────────────────────────────────────────────
 
-    function Header({ wsStatus, onRefresh }) {
+    function Header({ wsStatus, onRefresh, onPollPR }) {
       return (
-        <div className="header">
+        <header className="header">
           <span className="header-title">Agent Viewer</span>
-          <span className="header-subtitle">/workspaces/slopspaces</span>
           <div className="header-spacer" />
-          <button className="btn" onClick={onRefresh}>↺ Refresh</button>
+          <button className="btn" onClick={onPollPR} title="Poll GitHub PRs for status updates">
+            Poll PRs
+          </button>
+          <button className="btn" onClick={onRefresh}>
+            Refresh
+          </button>
           <div className="ws-indicator">
             <div className={`ws-dot ${wsStatus}`} />
-            <span>{wsStatus === 'connected' ? 'Live' : wsStatus === 'connecting' ? 'Connecting' : 'Offline'}</span>
+            <span>{wsStatus === 'connected' ? 'Live' : wsStatus === 'connecting' ? 'Connecting...' : 'Offline'}</span>
+          </div>
+        </header>
+      );
+    }
+
+    const FLOW_STATES = ['pending', 'processing', 'proposed', 'executing', 'isolated', 'revising', 'reintegrating', 'merged', 'complete', 'failed', 'closed'];
+    const FLOW_TYPES = ['repo-isolation', 'in-repo', 'direct'];
+
+    function FlowCard({ flow, selected, onClick, isUpdated }) {
+      const stages = flow.stages || [];
+
+      return (
+        <div
+          className={`flow-card ${selected ? 'selected' : ''} ${isUpdated ? 'updated' : ''}`}
+          onClick={onClick}
+        >
+          <div className="flow-card-header">
+            <span className="flow-id">{flow.id}</span>
+            <span className="flow-time">{fmtTime(flow.modified)}</span>
+          </div>
+
+          <div className="flow-badges">
+            <span className={`badge badge-${flow.state}`}>{stateDisplayName(flow.state)}</span>
+            {flow.type && flow.type !== 'unknown' && (
+              <span className={`badge badge-${flow.type}`}>{typeDisplayName(flow.type)}</span>
+            )}
+          </div>
+
+          {flow.instruction && (
+            <div className="flow-instruction">{flow.instruction}</div>
+          )}
+
+          {stages.length > 0 && (
+            <div className="stage-pipeline">
+              {stages.map((stage, i) => (
+                <React.Fragment key={i}>
+                  {i > 0 && <div className={`stage-connector ${stage.status === 'completed' || stages[i-1]?.status === 'completed' ? 'completed' : ''}`} />}
+                  <div
+                    className={`stage-dot ${stage.status}`}
+                    title={`${stage.name}: ${stage.status}`}
+                  />
+                </React.Fragment>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function FlowSidebar({ flows, selectedId, onSelect, updatedFlowIds }) {
+      const [stateFilter, setStateFilter] = useState(null);
+      const [typeFilter, setTypeFilter] = useState(null);
+
+      const filtered = useMemo(() => {
+        let result = flows;
+        if (stateFilter) {
+          result = result.filter(f => f.state === stateFilter);
+        }
+        if (typeFilter) {
+          result = result.filter(f => f.type === typeFilter);
+        }
+        return result;
+      }, [flows, stateFilter, typeFilter]);
+
+      const stateCounts = useMemo(() => {
+        const counts = {};
+        flows.forEach(f => { counts[f.state] = (counts[f.state] || 0) + 1; });
+        return counts;
+      }, [flows]);
+
+      const typeCounts = useMemo(() => {
+        const counts = {};
+        flows.forEach(f => {
+          if (f.type && f.type !== 'unknown') {
+            counts[f.type] = (counts[f.type] || 0) + 1;
+          }
+        });
+        return counts;
+      }, [flows]);
+
+      const activeStates = FLOW_STATES.filter(s => stateCounts[s]);
+      const activeTypes = FLOW_TYPES.filter(t => typeCounts[t]);
+
+      return (
+        <aside className="sidebar">
+          <div className="sidebar-header">
+            <span className="sidebar-title">Flows</span>
+            <span className="flow-count">{filtered.length} of {flows.length}</span>
+          </div>
+
+          {activeStates.length > 0 && (
+            <div className="sidebar-filters">
+              <button
+                className={`filter-chip ${!stateFilter ? 'active' : ''}`}
+                onClick={() => setStateFilter(null)}
+              >
+                All
+              </button>
+              {activeStates.map(s => (
+                <button
+                  key={s}
+                  className={`filter-chip ${stateFilter === s ? 'active' : ''}`}
+                  onClick={() => setStateFilter(stateFilter === s ? null : s)}
+                >
+                  {stateDisplayName(s)} ({stateCounts[s]})
+                </button>
+              ))}
+            </div>
+          )}
+
+          {activeTypes.length > 1 && (
+            <div className="sidebar-filters">
+              {activeTypes.map(t => (
+                <button
+                  key={t}
+                  className={`filter-chip ${typeFilter === t ? 'active' : ''}`}
+                  onClick={() => setTypeFilter(typeFilter === t ? null : t)}
+                >
+                  {typeDisplayName(t)} ({typeCounts[t]})
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="flow-list">
+            {filtered.map(flow => (
+              <FlowCard
+                key={flow.id}
+                flow={flow}
+                selected={selectedId === flow.id}
+                onClick={() => onSelect(flow)}
+                isUpdated={updatedFlowIds.has(flow.id)}
+              />
+            ))}
+            {filtered.length === 0 && (
+              <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
+                No flows found
+              </div>
+            )}
+          </div>
+        </aside>
+      );
+    }
+
+    function StageTimeline({ stages, selectedStage, onSelectStage }) {
+      if (!stages || stages.length === 0) return null;
+
+      return (
+        <div className="stage-timeline">
+          <div className="stage-timeline-title">Flow Stages</div>
+          <div className="timeline-stages">
+            {stages.map((stage, i) => (
+              <React.Fragment key={i}>
+                {i > 0 && (
+                  <div className={`timeline-connector ${stages[i-1]?.status === 'completed' ? 'completed' : ''}`} />
+                )}
+                <div
+                  className={`timeline-stage ${selectedStage?.name === stage.name ? 'selected' : ''}`}
+                  onClick={() => onSelectStage(stage)}
+                  title={`${stage.name}: ${stage.status}${stage.pr_url ? ' (has PR)' : ''}`}
+                >
+                  <div className={`timeline-stage-dot ${stage.status}`}>
+                    {stage.status === 'completed' && '✓'}
+                    {stage.status === 'failed' && '×'}
+                  </div>
+                  <span className="timeline-stage-name">{stage.name}</span>
+                </div>
+              </React.Fragment>
+            ))}
           </div>
         </div>
       );
     }
 
-    const CATEGORIES = ['input', 'heuristic', 'output', 'working', 'requests', 'dispatcher'];
-    const RECORD_KINDS = ['invocation', 'session', 'worker'];
+    function StageDetail({ stage, flow }) {
+      if (!stage) return null;
 
-    function SessionSidebar({ sessions, selected, onSelect, updatedPaths }) {
-      const [filter, setFilter] = useState(null);
-
-      const filtered = useMemo(() => {
-        if (!filter) return sessions;
-        return sessions.filter(s => s.category === filter);
-      }, [sessions, filter]);
-
-      const categoryCounts = useMemo(() => {
-        const counts = {};
-        sessions.forEach(s => { counts[s.category] = (counts[s.category] || 0) + 1; });
-        return counts;
-      }, [sessions]);
+      const prUrl = stage.pr_url || (stage.name === 'isolation' ? flow.isolation_pr_url : null) ||
+                    (stage.name === 'reintegration' ? flow.reintegration_pr_url : null);
+      const prState = stage.pr_state || (stage.name === 'isolation' ? flow.isolation_pr_state : null) ||
+                      (stage.name === 'reintegration' ? flow.reintegration_pr_state : null);
 
       return (
-        <>
-          <div className="sidebar-filters">
-            <button
-              className={`filter-chip ${!filter ? 'active' : ''}`}
-              onClick={() => setFilter(null)}
-            >
-              All ({sessions.length})
-            </button>
-            {CATEGORIES.filter(c => categoryCounts[c]).map(c => (
-              <button
-                key={c}
-                className={`filter-chip ${filter === c ? 'active' : ''}`}
-                onClick={() => setFilter(filter === c ? null : c)}
+        <div className="stage-detail">
+          <div className="stage-detail-header">
+            <span className="stage-detail-name">{stage.name}</span>
+            <span className={`stage-detail-status badge badge-${stage.status === 'active' ? 'executing' : stage.status}`}>
+              {stage.status}
+            </span>
+          </div>
+
+          {prUrl && (
+            <div className="stage-detail-pr">
+              <div className="stage-detail-pr-label">Pull Request</div>
+              <a href={prUrl} target="_blank" rel="noopener noreferrer" className="stage-detail-pr-link">
+                {prUrl}
+              </a>
+              {prState && (
+                <div className={`stage-detail-pr-state badge badge-${prState}`}>
+                  {prState}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function FilesPanel({ files, selectedFile, onSelectFile, fileContent, loading, updatedPaths }) {
+      return (
+        <div className="files-panel">
+          <div className="file-list">
+            <div className="file-list-header">Files</div>
+            {(!files || files.length === 0) && (
+              <div style={{ padding: '16px', color: 'var(--text-dim)', fontSize: '11px' }}>
+                No files in this stage
+              </div>
+            )}
+            {files?.map(f => (
+              <div
+                key={f.path}
+                className={`file-item ${selectedFile?.path === f.path ? 'selected' : ''} ${updatedPaths.has(f.path) ? 'updated' : ''}`}
+                onClick={() => onSelectFile(f)}
               >
-                {c} ({categoryCounts[c]})
-              </button>
+                <span className="file-icon">{fileIcon(f.name)}</span>
+                <span className="file-name">{f.name}</span>
+                <span className="file-size">{fmtSize(f.size)}</span>
+              </div>
             ))}
           </div>
-          <div className="session-list">
-            {filtered.map(s => {
-              const isUpdated = updatedPaths.some(p => p.includes(s.id));
-              return (
-                <div
-                  key={`${s.category}:${s.id}`}
-                  className={`session-item ${selected?.id === s.id ? 'selected' : ''} ${isUpdated ? 'updated' : ''}`}
-                  onClick={() => onSelect(s)}
-                >
-                  <div className="session-item-id">{s.id}</div>
-                  <div className="session-item-meta">
-                    <span className={`badge ${categoryBadgeClass(s.category)}`}>{s.category}</span>
-                    {s.status && <span className={`badge ${statusBadgeClass(s.status)}`}>{s.status}</span>}
-                    {s.type && s.type !== 'unknown' && <span className="badge badge-type">{s.type}</span>}
-                    <span className="session-item-time">{fmtTime(s.modified)}</span>
-                  </div>
+
+          <div className="content-viewer">
+            {selectedFile ? (
+              <>
+                <div className="content-toolbar">
+                  <span className="file-icon">{fileIcon(selectedFile.name)}</span>
+                  <span className="content-filename">{selectedFile.name}</span>
+                  <span className="content-meta">
+                    {fmtSize(selectedFile.size)} · {fmtTime(selectedFile.modified)}
+                  </span>
                 </div>
-              );
-            })}
-            {filtered.length === 0 && (
-              <div style={{ padding: '20px 12px', color: 'var(--text-dim)', fontSize: 12 }}>
-                No sessions found
+                <div className="content-body">
+                  {loading ? (
+                    <div style={{ color: 'var(--text-dim)' }}>Loading...</div>
+                  ) : (
+                    <FileContent filename={selectedFile.name} content={fileContent} />
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="detail-empty">
+                <div className="detail-empty-icon">📄</div>
+                <div className="detail-empty-text">Select a file to view</div>
               </div>
             )}
           </div>
-        </>
+        </div>
       );
     }
 
-    function RecordSidebar({ records, selected, onSelect }) {
-      const [filter, setFilter] = useState(null);
-
-      const filtered = useMemo(() => {
-        if (!filter) return records;
-        return records.filter(r => r.kind === filter);
-      }, [records, filter]);
-
-      const kindCounts = useMemo(() => {
-        const counts = {};
-        records.forEach(r => { counts[r.kind] = (counts[r.kind] || 0) + 1; });
-        return counts;
-      }, [records]);
-
-      return (
-        <>
-          <div className="sidebar-filters">
-            <button
-              className={`filter-chip ${!filter ? 'active' : ''}`}
-              onClick={() => setFilter(null)}
-            >
-              All ({records.length})
-            </button>
-            {RECORD_KINDS.filter(k => kindCounts[k]).map(k => (
-              <button
-                key={k}
-                className={`filter-chip ${filter === k ? 'active' : ''}`}
-                onClick={() => setFilter(filter === k ? null : k)}
-              >
-                {k} ({kindCounts[k]})
-              </button>
-            ))}
-          </div>
-          <div className="session-list">
-            {filtered.map(r => (
-              <div
-                key={r.id}
-                className={`session-item ${selected?.id === r.id ? 'selected' : ''}`}
-                onClick={() => onSelect(r)}
-              >
-                <div className="session-item-id">{r.id.replace('worker/', '')}</div>
-                <div className="session-item-meta">
-                  <span className={`badge ${categoryBadgeClass(r.kind)}`}>{r.kind}</span>
-                  <span className="session-item-time">{fmtTime(r.modified)}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      );
-    }
-
-    function DetailPanel({ selected, tab, updatedPaths }) {
+    function FlowDetail({ flow, updatedPaths }) {
+      const [selectedStage, setSelectedStage] = useState(null);
       const [selectedFile, setSelectedFile] = useState(null);
       const [fileContent, setFileContent] = useState(null);
       const [loading, setLoading] = useState(false);
 
-      // Reset file selection when session changes
+      // Reset selection when flow changes
       useEffect(() => {
+        setSelectedStage(null);
         setSelectedFile(null);
         setFileContent(null);
-      }, [selected?.id]);
+      }, [flow?.id]);
 
-      // Auto-select DISPATCH.json or INSTRUCTION.json if present
+      // Auto-select current stage
       useEffect(() => {
-        if (!selected || selectedFile) return;
-        const files = selected.files || [];
-        const preferred = files.find(f =>
-          ['DISPATCH.json', 'INSTRUCTION.json', 'HEURISTIC.md', 'metadata.txt'].includes(f.name)
+        if (!flow?.stages?.length || selectedStage) return;
+
+        // Find current active stage or last completed
+        const active = flow.stages.find(s => s.status === 'active');
+        const lastCompleted = [...flow.stages].reverse().find(s => s.status === 'completed');
+        const toSelect = active || lastCompleted || flow.stages[0];
+
+        if (toSelect) {
+          setSelectedStage(toSelect);
+        }
+      }, [flow?.id, flow?.stages]);
+
+      // Auto-select preferred file when stage changes
+      useEffect(() => {
+        if (!selectedStage?.files?.length) return;
+
+        const preferred = selectedStage.files.find(f =>
+          ['DISPATCH.json', 'INSTRUCTION.json', 'HEURISTIC.md', 'flow_'].some(p => f.name.includes(p) || f.name === p)
         );
-        if (preferred) loadFile(preferred);
-      }, [selected]);
 
-      // Reload current file if it was updated
+        if (preferred) {
+          loadFile(preferred);
+        } else if (selectedStage.files.length > 0) {
+          loadFile(selectedStage.files[0]);
+        }
+      }, [selectedStage]);
+
+      // Reload file if it was updated
       useEffect(() => {
-        if (!selectedFile || !updatedPaths.length) return;
-        if (updatedPaths.some(p => p.includes(selectedFile.name))) {
+        if (!selectedFile || updatedPaths.size === 0) return;
+        if (updatedPaths.has(selectedFile.path) || [...updatedPaths].some(p => p.includes(selectedFile.name))) {
           loadFile(selectedFile);
         }
       }, [updatedPaths]);
@@ -701,112 +1071,108 @@
         }
       }, []);
 
-      if (!selected) {
+      const handleStageSelect = useCallback((stage) => {
+        setSelectedStage(stage);
+        setSelectedFile(null);
+        setFileContent(null);
+      }, []);
+
+      if (!flow) {
         return (
           <div className="detail-panel">
-            <div className="empty-state" style={{ flex: 1 }}>
-              <div className="empty-state-icon">◈</div>
-              <div className="empty-state-text">Select a {tab === 'sessions' ? 'session' : 'record'} to inspect</div>
+            <div className="detail-empty">
+              <div className="detail-empty-icon">◈</div>
+              <div className="detail-empty-text">Select a flow to view details</div>
             </div>
           </div>
         );
       }
 
-      const files = selected.files || [];
-      const isUpdated = f => updatedPaths.some(p => p.includes(f.name));
+      const currentFiles = selectedStage?.files || [];
+      const updatedPathsSet = new Set(updatedPaths);
 
       return (
         <div className="detail-panel">
-          <div className="detail-meta">
-            <div className="detail-meta-header">
-              <div className="detail-meta-title">{selected.id}</div>
-              <div className="detail-meta-badges">
-                {selected.category && (
-                  <span className={`badge ${categoryBadgeClass(selected.category)}`}>{selected.category}</span>
-                )}
-                {selected.kind && (
-                  <span className={`badge ${categoryBadgeClass(selected.kind)}`}>{selected.kind}</span>
-                )}
-                {selected.status && (
-                  <span className={`badge ${statusBadgeClass(selected.status)}`}>{selected.status}</span>
-                )}
-                {selected.type && selected.type !== 'unknown' && (
-                  <span className="badge badge-type">{selected.type}</span>
-                )}
-              </div>
-              <div className="detail-meta-path">{selected.path}</div>
-            </div>
-            <div className="file-list">
-              {files.length === 0 && (
-                <div style={{ padding: '12px', color: 'var(--text-dim)', fontSize: 11 }}>No files</div>
+          <div className="detail-header">
+            <div className="detail-id">{flow.id}</div>
+            <div className="detail-badges">
+              <span className={`badge badge-${flow.state}`}>{stateDisplayName(flow.state)}</span>
+              {flow.type && flow.type !== 'unknown' && (
+                <span className={`badge badge-${flow.type}`}>{typeDisplayName(flow.type)}</span>
               )}
-              {files.map(f => (
-                <div
-                  key={f.path}
-                  className={`file-item ${selectedFile?.path === f.path ? 'selected' : ''} ${isUpdated(f) ? 'updated' : ''}`}
-                  onClick={() => loadFile(f)}
-                >
-                  <span className="file-icon">{fileIcon(f.name)}</span>
-                  <span className="file-name">{f.name}</span>
-                  <span className="file-size">{fmtSize(f.size)}</span>
+            </div>
+            <div className="detail-meta">
+              {flow.target_repo && (
+                <div className="detail-meta-item">
+                  <span className="detail-meta-label">Target:</span>
+                  <span className="detail-meta-value">{flow.target_repo}</span>
                 </div>
-              ))}
+              )}
+              {flow.isolation_pr_url && (
+                <div className="detail-meta-item">
+                  <span className="detail-meta-label">Isolation PR:</span>
+                  <a href={flow.isolation_pr_url} target="_blank" rel="noopener noreferrer" className="detail-meta-link">
+                    View PR ({flow.isolation_pr_state || 'open'})
+                  </a>
+                </div>
+              )}
+              {flow.reintegration_pr_url && (
+                <div className="detail-meta-item">
+                  <span className="detail-meta-label">Reintegration PR:</span>
+                  <a href={flow.reintegration_pr_url} target="_blank" rel="noopener noreferrer" className="detail-meta-link">
+                    View PR ({flow.reintegration_pr_state || 'open'})
+                  </a>
+                </div>
+              )}
+              <div className="detail-meta-item">
+                <span className="detail-meta-label">Created:</span>
+                <span className="detail-meta-value">{fmtTime(flow.created)}</span>
+              </div>
             </div>
           </div>
 
-          <div className="content-viewer">
-            {selectedFile ? (
-              <>
-                <div className="content-toolbar">
-                  <span className="file-icon">{fileIcon(selectedFile.name)}</span>
-                  <span className="content-filename">{selectedFile.name}</span>
-                  <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-dim)' }}>
-                    {fmtSize(selectedFile.size)} · {fmtTime(selectedFile.modified)}
-                  </span>
-                </div>
-                <div className="content-body">
-                  {loading ? (
-                    <div style={{ color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-                      Loading…
-                    </div>
-                  ) : (
-                    <FileContentView filename={selectedFile.name} content={fileContent} />
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="empty-state">
-                <div className="empty-state-icon">📂</div>
-                <div className="empty-state-text">Select a file to view its contents</div>
-              </div>
-            )}
-          </div>
+          <StageTimeline
+            stages={flow.stages}
+            selectedStage={selectedStage}
+            onSelectStage={handleStageSelect}
+          />
+
+          {selectedStage && <StageDetail stage={selectedStage} flow={flow} />}
+
+          <FilesPanel
+            files={currentFiles}
+            selectedFile={selectedFile}
+            onSelectFile={loadFile}
+            fileContent={fileContent}
+            loading={loading}
+            updatedPaths={updatedPathsSet}
+          />
         </div>
       );
     }
 
-    function LiveFeed({ events }) {
-      const [expanded, setExpanded] = useState(true);
+    function EventFeed({ events }) {
+      const [collapsed, setCollapsed] = useState(false);
       const scrollRef = useRef(null);
 
       useEffect(() => {
-        if (scrollRef.current && expanded) {
+        if (scrollRef.current && !collapsed) {
           scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
         }
-      }, [events, expanded]);
+      }, [events, collapsed]);
 
       return (
-        <div className={`live-feed ${expanded ? 'expanded' : ''}`}>
-          <div className="live-feed-header" onClick={() => setExpanded(e => !e)}>
-            <span className="live-feed-title">Live Events</span>
-            {events.length > 0 && <span className="live-badge">{Math.min(events.length, 99)}</span>}
-            <span className="live-feed-toggle">{expanded ? '▼' : '▲'}</span>
+        <div className={`event-feed ${collapsed ? 'collapsed' : ''}`}>
+          <div className="event-feed-header" onClick={() => setCollapsed(!collapsed)}>
+            <span className="event-feed-title">Live Events</span>
+            {events.length > 0 && <span className="event-badge">{events.length}</span>}
+            <span className="event-toggle">{collapsed ? '▲ Show' : '▼ Hide'}</span>
           </div>
-          {expanded && (
+          {!collapsed && (
             <div className="event-scroll" ref={scrollRef}>
               {events.length === 0 && (
-                <div style={{ padding: '8px 12px', color: 'var(--text-dim)', fontSize: 11, fontFamily: 'var(--font-mono)' }}>
-                  Waiting for file system events…
+                <div style={{ padding: '12px 16px', color: 'var(--text-dim)', fontSize: '11px', fontFamily: 'var(--font-mono)' }}>
+                  Waiting for file system events...
                 </div>
               )}
               {events.map((ev, i) => (
@@ -825,28 +1191,33 @@
     // ── App ───────────────────────────────────────────────────────────────────
 
     function App() {
-      const [sessions, setSessions] = useState([]);
-      const [records, setRecords] = useState([]);
-      const [selected, setSelected] = useState(null);
-      const [tab, setTab] = useState('sessions');
+      const [flows, setFlows] = useState([]);
+      const [selectedFlow, setSelectedFlow] = useState(null);
       const [wsStatus, setWsStatus] = useState('connecting');
       const [events, setEvents] = useState([]);
-      const [updatedPaths, setUpdatedPaths] = useState([]);
+      const [updatedFlowIds, setUpdatedFlowIds] = useState(new Set());
+      const [updatedPaths, setUpdatedPaths] = useState(new Set());
       const wsRef = useRef(null);
       const reconnectRef = useRef(null);
 
-      const fetchSessions = useCallback(async () => {
+      const fetchFlows = useCallback(async () => {
         try {
-          const res = await fetch('/api/sessions');
-          if (res.ok) setSessions(await res.json());
-        } catch {}
+          const res = await fetch('/api/flows');
+          if (res.ok) {
+            const data = await res.json();
+            setFlows(data || []);
+          }
+        } catch (e) {
+          console.error('Failed to fetch flows:', e);
+        }
       }, []);
 
-      const fetchRecords = useCallback(async () => {
+      const pollPR = useCallback(async () => {
         try {
-          const res = await fetch('/api/records');
-          if (res.ok) setRecords(await res.json());
-        } catch {}
+          await fetch('/api/poll-pr');
+        } catch (e) {
+          console.error('Failed to poll PRs:', e);
+        }
       }, []);
 
       const connectWS = useCallback(() => {
@@ -864,22 +1235,51 @@
 
         ws.onmessage = (e) => {
           try {
-            const ev = JSON.parse(e.data);
-            if (ev.type === 'file_event') {
-              const displayTime = new Date(ev.time || Date.now()).toLocaleTimeString();
-              setEvents(prev => [...prev.slice(-199), { ...ev, displayTime }]);
+            const msg = JSON.parse(e.data);
+
+            if (msg.type === 'file_event') {
+              const payload = msg.payload;
+              const displayTime = new Date(msg.time).toLocaleTimeString();
+              setEvents(prev => [...prev.slice(-199), { ...payload, displayTime }]);
+
+              // Track updated paths
               setUpdatedPaths(prev => {
-                const next = [...prev, ev.path];
-                setTimeout(() => setUpdatedPaths(p => p.filter(x => x !== ev.path)), 2000);
+                const next = new Set(prev);
+                next.add(payload.path);
+                setTimeout(() => {
+                  setUpdatedPaths(p => {
+                    const updated = new Set(p);
+                    updated.delete(payload.path);
+                    return updated;
+                  });
+                }, 2000);
                 return next;
               });
-              // Refresh data on significant events
-              if (ev.op === 'create' || ev.op === 'remove') {
-                fetchSessions();
-                fetchRecords();
-              }
             }
-          } catch {}
+
+            if (msg.type === 'flows_updated') {
+              fetchFlows();
+            }
+
+            if (msg.type === 'flow_update') {
+              const payload = msg.payload;
+              setUpdatedFlowIds(prev => {
+                const next = new Set(prev);
+                next.add(payload.flow_id);
+                setTimeout(() => {
+                  setUpdatedFlowIds(p => {
+                    const updated = new Set(p);
+                    updated.delete(payload.flow_id);
+                    return updated;
+                  });
+                }, 2000);
+                return next;
+              });
+              fetchFlows();
+            }
+          } catch (e) {
+            console.error('WebSocket message error:', e);
+          }
         };
 
         ws.onerror = () => setWsStatus('error');
@@ -887,69 +1287,48 @@
           setWsStatus('connecting');
           reconnectRef.current = setTimeout(connectWS, 3000);
         };
-      }, [fetchSessions, fetchRecords]);
+      }, [fetchFlows]);
 
       useEffect(() => {
-        fetchSessions();
-        fetchRecords();
+        fetchFlows();
         connectWS();
+
+        // Periodic refresh every 30 seconds
+        const interval = setInterval(fetchFlows, 30000);
+
         return () => {
           wsRef.current?.close();
           if (reconnectRef.current) clearTimeout(reconnectRef.current);
+          clearInterval(interval);
         };
-      }, []);
+      }, [fetchFlows, connectWS]);
 
-      const handleRefresh = useCallback(() => {
-        fetchSessions();
-        fetchRecords();
-      }, [fetchSessions, fetchRecords]);
-
-      const currentItems = tab === 'sessions' ? sessions : records;
-      const selectedItem = tab === 'sessions'
-        ? sessions.find(s => s.id === selected?.id && s.category === selected?.category)
-        : records.find(r => r.id === selected?.id);
+      // Keep selected flow updated
+      const currentFlow = useMemo(() => {
+        if (!selectedFlow) return null;
+        return flows.find(f => f.id === selectedFlow.id) || selectedFlow;
+      }, [flows, selectedFlow?.id]);
 
       return (
         <>
-          <Header wsStatus={wsStatus} onRefresh={handleRefresh} />
+          <Header
+            wsStatus={wsStatus}
+            onRefresh={fetchFlows}
+            onPollPR={pollPR}
+          />
           <div className="layout">
-            <div className="sidebar">
-              <div className="sidebar-tabs">
-                <button
-                  className={`sidebar-tab ${tab === 'sessions' ? 'active' : ''}`}
-                  onClick={() => { setTab('sessions'); setSelected(null); }}
-                >
-                  Sessions ({sessions.length})
-                </button>
-                <button
-                  className={`sidebar-tab ${tab === 'records' ? 'active' : ''}`}
-                  onClick={() => { setTab('records'); setSelected(null); }}
-                >
-                  Records ({records.length})
-                </button>
-              </div>
-              {tab === 'sessions' ? (
-                <SessionSidebar
-                  sessions={sessions}
-                  selected={selected}
-                  onSelect={setSelected}
-                  updatedPaths={updatedPaths}
-                />
-              ) : (
-                <RecordSidebar
-                  records={records}
-                  selected={selected}
-                  onSelect={setSelected}
-                />
-              )}
-            </div>
-            <DetailPanel
-              selected={selectedItem}
-              tab={tab}
+            <FlowSidebar
+              flows={flows}
+              selectedId={selectedFlow?.id}
+              onSelect={setSelectedFlow}
+              updatedFlowIds={updatedFlowIds}
+            />
+            <FlowDetail
+              flow={currentFlow}
               updatedPaths={updatedPaths}
             />
           </div>
-          <LiveFeed events={events} />
+          <EventFeed events={events} />
         </>
       );
     }
