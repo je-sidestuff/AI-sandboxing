@@ -1,4 +1,4 @@
-module agent-tester
+module agent-executor
 
 go 1.21
 
