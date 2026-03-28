@@ -61,15 +61,17 @@ const transcribeClient = new TranscribeStreamingClient({
 });
 
 // Function to save transcription to HEURISTIC.md for intake
-function saveToHeuristic(transcriptText, callback) {
+function saveToHeuristic(transcriptText, includeSupplemental, callback) {
     const heuristicId = uuidv4().slice(0, 8);
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const folderName = `${timestamp}_scribe_${heuristicId}`;
     const folderPath = path.join(HEURISTIC_PENDING_DIR, folderName);
     const heuristicFile = path.join(folderPath, 'HEURISTIC.md');
 
-    // Format the content with prelude and postlude
-    const heuristicContent = `${HEURISTIC_PRELUDE}${transcriptText}${HEURISTIC_POSTLUDE}`;
+    // Format the content with prelude and postlude if includeSupplemental is true
+    const heuristicContent = includeSupplemental
+        ? `${HEURISTIC_PRELUDE}${transcriptText}${HEURISTIC_POSTLUDE}`
+        : transcriptText;
 
     // Ensure the pending directory exists
     fs.mkdir(folderPath, { recursive: true }, (err) => {
@@ -86,36 +88,6 @@ function saveToHeuristic(transcriptText, callback) {
                 callback(err);
             } else {
                 console.log(`Transcription saved to ${heuristicFile}`);
-                callback(null, heuristicFile);
-            }
-        });
-    });
-}
-
-// Function to save direct text input to HEURISTIC.md (no prelude/postlude)
-function saveDirectTextToHeuristic(text, callback) {
-    const heuristicId = uuidv4().slice(0, 8);
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const folderName = `${timestamp}_scribe_${heuristicId}`;
-    const folderPath = path.join(HEURISTIC_PENDING_DIR, folderName);
-    const heuristicFile = path.join(folderPath, 'HEURISTIC.md');
-
-    // Use the text directly without prelude/postlude
-    const heuristicContent = text;
-
-    fs.mkdir(folderPath, { recursive: true }, (err) => {
-        if (err) {
-            console.error('Error creating heuristic folder:', err);
-            callback(err);
-            return;
-        }
-
-        fs.writeFile(heuristicFile, heuristicContent, (err) => {
-            if (err) {
-                console.error('Error writing HEURISTIC.md:', err);
-                callback(err);
-            } else {
-                console.log(`Direct text saved to ${heuristicFile}`);
                 callback(null, heuristicFile);
             }
         });
@@ -231,8 +203,9 @@ io.on('connection', (socket) => {
     });
 
     // Save the accumulated transcript to HEURISTIC.md
-    socket.on('saveTranscription', () => {
-        console.log('Saving transcription to HEURISTIC.md');
+    socket.on('saveTranscription', (options = {}) => {
+        const includeSupplemental = options.includeSupplemental !== false; // Default to true
+        console.log('Saving transcription to HEURISTIC.md, includeSupplemental:', includeSupplemental);
         const trimmedTranscript = sessionTranscript.trim();
 
         if (!trimmedTranscript) {
@@ -240,7 +213,7 @@ io.on('connection', (socket) => {
             return;
         }
 
-        saveToHeuristic(trimmedTranscript, (err, filePath) => {
+        saveToHeuristic(trimmedTranscript, includeSupplemental, (err, filePath) => {
             if (err) {
                 socket.emit('saveResult', { success: false, error: err.message });
             } else {
@@ -251,9 +224,19 @@ io.on('connection', (socket) => {
         });
     });
 
-    // Save direct text input to HEURISTIC.md (no prelude/postlude)
-    socket.on('saveTextInput', (text) => {
-        console.log('Saving direct text input to HEURISTIC.md');
+    // Save direct text input to HEURISTIC.md
+    socket.on('saveTextInput', (data) => {
+        // Support both old format (string) and new format (object with text and includeSupplemental)
+        let text, includeSupplemental;
+        if (typeof data === 'string') {
+            text = data;
+            includeSupplemental = false; // Legacy behavior
+        } else {
+            text = data.text;
+            includeSupplemental = data.includeSupplemental !== false; // Default to true
+        }
+
+        console.log('Saving direct text input to HEURISTIC.md, includeSupplemental:', includeSupplemental);
         const trimmedText = (text || '').trim();
 
         if (!trimmedText) {
@@ -261,7 +244,7 @@ io.on('connection', (socket) => {
             return;
         }
 
-        saveDirectTextToHeuristic(trimmedText, (err, filePath) => {
+        saveToHeuristic(trimmedText, includeSupplemental, (err, filePath) => {
             if (err) {
                 socket.emit('textSaveResult', { success: false, error: err.message });
             } else {

@@ -27,6 +27,12 @@
                 <button id="clearButton">Clear Transcript</button>
                 <button id="saveButton" disabled>Save to Heuristic</button>
             </div>
+            <div class="supplemental-checkbox">
+                <label>
+                    <input type="checkbox" id="includeSupplementalCheckbox" checked>
+                    Include supplemental text (prelude/postlude)
+                </label>
+            </div>
             <div id="transcript"></div>
             <div id="saveStatus"></div>
 
@@ -83,6 +89,7 @@
         const textInput = document.getElementById('textInput');
         const textSaveButton = document.getElementById('textSaveButton');
         const textSaveStatus = document.getElementById('textSaveStatus');
+        const includeSupplementalCheckbox = document.getElementById('includeSupplementalCheckbox');
 
         let currentTranscript = '';
         let lastFinalIndex = 0;
@@ -289,7 +296,7 @@
             }
             saveStatus.textContent = 'Saving...';
             saveStatus.className = 'save-pending';
-            socket.emit('saveTranscription');
+            socket.emit('saveTranscription', { includeSupplemental: includeSupplementalCheckbox.checked });
         }
 
         function saveTextInput() {
@@ -305,7 +312,7 @@
             }
             textSaveStatus.textContent = 'Saving...';
             textSaveStatus.className = 'save-pending';
-            socket.emit('saveTextInput', text);
+            socket.emit('saveTextInput', { text: text, includeSupplemental: includeSupplementalCheckbox.checked });
         }
 
         console.log('Client-side script loaded');
