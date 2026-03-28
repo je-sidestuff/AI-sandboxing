@@ -18,6 +18,10 @@ const JWT_SECRET = 'your-secret-key-change-in-production'; // TODO: Move to envi
 const HEURISTIC_BASE_DIR = process.env.HEURISTIC_DIR || '/workspaces/slopspaces/heuristic';
 const HEURISTIC_PENDING_DIR = path.join(HEURISTIC_BASE_DIR, 'pending');
 
+// Audio/text file storage configuration
+const SLOPSPACES_BASE = process.env.SLOPSPACES_DIR || '/workspaces/slopspaces';
+const SCRIBE_OUTPUT_DIR = path.join(SLOPSPACES_BASE, 'scribe');
+
 // Prelude and postlude text for heuristic intake
 const HEURISTIC_PRELUDE = 'In je-sidestuff/AI-sandboxing - ';
 const HEURISTIC_POSTLUDE = ' Use repo-isolation to avoid interfering with the target repo.';
@@ -89,6 +93,46 @@ function saveToHeuristic(transcriptText, includeSupplemental, callback) {
             } else {
                 console.log(`Transcription saved to ${heuristicFile}`);
                 callback(null, heuristicFile);
+            }
+        });
+    });
+}
+
+// Function to save text to a JSONL file (append mode)
+function saveToFile(text, filename, includeSupplemental, callback) {
+    // Ensure the audio directory exists
+    fs.mkdir(SCRIBE_OUTPUT_DIR, { recursive: true }, (err) => {
+        if (err) {
+            console.error('Error creating scribe ouytput directory:', err);
+            callback(err);
+            return;
+        }
+
+        const filePath = path.join(SCRIBE_OUTPUT_DIR, filename);
+        const timestamp = new Date().toISOString();
+
+        // Format the content with prelude and postlude if includeSupplemental is true
+        const content = includeSupplemental
+            ? `${HEURISTIC_PRELUDE}${text}${HEURISTIC_POSTLUDE}`
+            : text;
+
+        // Create a JSONL record similar to session recordings
+        const record = {
+            timestamp: timestamp,
+            type: 'scribe_entry',
+            content: content
+        };
+
+        const jsonLine = JSON.stringify(record) + '\n';
+
+        // Append to file (creates if doesn't exist)
+        fs.appendFile(filePath, jsonLine, (err) => {
+            if (err) {
+                console.error('Error writing to file:', err);
+                callback(err);
+            } else {
+                console.log(`Text appended to ${filePath}`);
+                callback(null, filePath);
             }
         });
     });
@@ -249,6 +293,52 @@ io.on('connection', (socket) => {
                 socket.emit('textSaveResult', { success: false, error: err.message });
             } else {
                 socket.emit('textSaveResult', { success: true, filePath: filePath });
+            }
+        });
+    });
+
+    // Store transcription to JSONL file
+    socket.on('storeTranscription', (options = {}) => {
+        const filename = options.filename || `${new Date().toISOString().slice(0, 10)}.jsonl`;
+        const includeSupplemental = options.includeSupplemental !== false;
+        console.log('Storing transcription to file:', filename, 'includeSupplemental:', includeSupplemental);
+        const trimmedTranscript = sessionTranscript.trim();
+
+        if (!trimmedTranscript) {
+            socket.emit('storeResult', { success: false, error: 'No transcription to store' });
+            return;
+        }
+
+        saveToFile(trimmedTranscript, filename, includeSupplemental, (err, filePath) => {
+            if (err) {
+                socket.emit('storeResult', { success: false, error: err.message });
+            } else {
+                socket.emit('storeResult', { success: true, filePath: filePath });
+                // Clear the session transcript after successful store
+                sessionTranscript = '';
+            }
+        });
+    });
+
+    // Store direct text input to JSONL file
+    socket.on('storeTextInput', (data) => {
+        const text = data.text;
+        const filename = data.filename || `${new Date().toISOString().slice(0, 10)}.jsonl`;
+        const includeSupplemental = data.includeSupplemental !== false;
+
+        console.log('Storing text input to file:', filename, 'includeSupplemental:', includeSupplemental);
+        const trimmedText = (text || '').trim();
+
+        if (!trimmedText) {
+            socket.emit('textStoreResult', { success: false, error: 'No text to store' });
+            return;
+        }
+
+        saveToFile(trimmedText, filename, includeSupplemental, (err, filePath) => {
+            if (err) {
+                socket.emit('textStoreResult', { success: false, error: err.message });
+            } else {
+                socket.emit('textStoreResult', { success: true, filePath: filePath });
             }
         });
     });

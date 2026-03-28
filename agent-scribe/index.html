@@ -33,7 +33,14 @@
                     Include supplemental text (prelude/postlude)
                 </label>
             </div>
+            <div class="file-output-section">
+                <label for="fileOutputName">File output name:</label>
+                <input type="text" id="fileOutputName" placeholder="YYYY-MM-DD.jsonl">
+            </div>
             <div id="transcript"></div>
+            <div class="button-container secondary-buttons">
+                <button id="storeTranscriptButton" disabled>Store to File</button>
+            </div>
             <div id="saveStatus"></div>
 
             <div class="text-input-section">
@@ -42,6 +49,7 @@
                 <textarea id="textInput" placeholder="Enter your heuristic request here..."></textarea>
                 <div class="text-button-container">
                     <button id="textSaveButton" disabled>Save to Heuristic</button>
+                    <button id="storeTextButton" disabled>Store to File</button>
                 </div>
                 <div id="textSaveStatus"></div>
             </div>
@@ -90,9 +98,16 @@
         const textSaveButton = document.getElementById('textSaveButton');
         const textSaveStatus = document.getElementById('textSaveStatus');
         const includeSupplementalCheckbox = document.getElementById('includeSupplementalCheckbox');
+        const fileOutputName = document.getElementById('fileOutputName');
+        const storeTranscriptButton = document.getElementById('storeTranscriptButton');
+        const storeTextButton = document.getElementById('storeTextButton');
 
         let currentTranscript = '';
         let lastFinalIndex = 0;
+
+        // Set default filename to today's date
+        const today = new Date().toISOString().slice(0, 10);
+        fileOutputName.value = `${today}.jsonl`;
 
         connectButton.addEventListener('click', connectToServer);
         startButton.addEventListener('click', startRecording);
@@ -100,6 +115,8 @@
         clearButton.addEventListener('click', clearTranscript);
         saveButton.addEventListener('click', saveTranscription);
         textSaveButton.addEventListener('click', saveTextInput);
+        storeTranscriptButton.addEventListener('click', storeTranscription);
+        storeTextButton.addEventListener('click', storeTextInput);
 
         // Auto-fetch token and connect on page load
         window.addEventListener('load', async () => {
@@ -143,6 +160,8 @@
                 stopButton.disabled = false;
                 saveButton.disabled = false;
                 textSaveButton.disabled = false;
+                storeTranscriptButton.disabled = false;
+                storeTextButton.disabled = false;
                 connectButton.textContent = 'Reconnect';
             });
 
@@ -154,6 +173,8 @@
                 stopButton.disabled = true;
                 saveButton.disabled = true;
                 textSaveButton.disabled = true;
+                storeTranscriptButton.disabled = true;
+                storeTextButton.disabled = true;
             });
 
             socket.on('disconnect', () => {
@@ -164,6 +185,8 @@
                 stopButton.disabled = true;
                 saveButton.disabled = true;
                 textSaveButton.disabled = true;
+                storeTranscriptButton.disabled = true;
+                storeTextButton.disabled = true;
             });
 
             setupSocketListeners();
@@ -213,6 +236,38 @@
                     textInput.value = '';
                 } else {
                     textSaveStatus.textContent = 'Save failed: ' + result.error;
+                    textSaveStatus.className = 'save-error';
+                }
+                setTimeout(() => {
+                    textSaveStatus.textContent = '';
+                    textSaveStatus.className = '';
+                }, 5000);
+            });
+
+            socket.on('storeResult', result => {
+                if (result.success) {
+                    saveStatus.textContent = 'Stored successfully to: ' + result.filePath;
+                    saveStatus.className = 'save-success';
+                    currentTranscript = '';
+                    lastFinalIndex = 0;
+                    transcript.textContent = '';
+                } else {
+                    saveStatus.textContent = 'Store failed: ' + result.error;
+                    saveStatus.className = 'save-error';
+                }
+                setTimeout(() => {
+                    saveStatus.textContent = '';
+                    saveStatus.className = '';
+                }, 5000);
+            });
+
+            socket.on('textStoreResult', result => {
+                if (result.success) {
+                    textSaveStatus.textContent = 'Stored successfully to: ' + result.filePath;
+                    textSaveStatus.className = 'save-success';
+                    textInput.value = '';
+                } else {
+                    textSaveStatus.textContent = 'Store failed: ' + result.error;
                     textSaveStatus.className = 'save-error';
                 }
                 setTimeout(() => {
@@ -313,6 +368,44 @@
             textSaveStatus.textContent = 'Saving...';
             textSaveStatus.className = 'save-pending';
             socket.emit('saveTextInput', { text: text, includeSupplemental: includeSupplementalCheckbox.checked });
+        }
+
+        function storeTranscription() {
+            console.log('Store transcript button clicked');
+            if (!socket || !socket.connected) {
+                alert('Please connect to the server first');
+                return;
+            }
+            if (!currentTranscript.trim()) {
+                alert('No transcription to store');
+                return;
+            }
+            saveStatus.textContent = 'Storing...';
+            saveStatus.className = 'save-pending';
+            socket.emit('storeTranscription', {
+                filename: fileOutputName.value.trim() || `${new Date().toISOString().slice(0, 10)}.jsonl`,
+                includeSupplemental: includeSupplementalCheckbox.checked
+            });
+        }
+
+        function storeTextInput() {
+            console.log('Store text button clicked');
+            if (!socket || !socket.connected) {
+                alert('Please connect to the server first');
+                return;
+            }
+            const text = textInput.value.trim();
+            if (!text) {
+                alert('No text to store');
+                return;
+            }
+            textSaveStatus.textContent = 'Storing...';
+            textSaveStatus.className = 'save-pending';
+            socket.emit('storeTextInput', {
+                text: text,
+                filename: fileOutputName.value.trim() || `${new Date().toISOString().slice(0, 10)}.jsonl`,
+                includeSupplemental: includeSupplementalCheckbox.checked
+            });
         }
 
         console.log('Client-side script loaded');

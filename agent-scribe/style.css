@@ -159,6 +159,41 @@ button:disabled:hover {
     cursor: pointer;
     accent-color: #667eea;
 }
+.file-output-section {
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+}
+.file-output-section label {
+    font-weight: bold;
+    color: #2c3e50;
+    font-size: 14px;
+}
+#fileOutputName {
+    padding: 8px 12px;
+    font-size: 14px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    font-family: monospace;
+    width: 200px;
+}
+#fileOutputName:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
+}
+.secondary-buttons {
+    margin-top: 10px;
+    margin-bottom: 5px;
+}
+#storeTranscriptButton, #storeTextButton {
+    background-color: #17a2b8;
+}
+#storeTranscriptButton:hover, #storeTextButton:hover {
+    background-color: #138496;
+}
 button {
     padding: 12px 25px;
     font-size: 16px;
@@ -266,6 +301,7 @@ button:hover {
 .text-button-container {
     display: flex;
     justify-content: center;
+    gap: 15px;
     margin-top: 15px;
 }
 #textSaveButton {
