@@ -22,3 +22,14 @@ output "source_repo" {
   description = "The source repo that was cloned from"
   value       = module.ai_containment.source_repo
 }
+
+# Sequence execution outputs
+output "sequence_instructions" {
+  description = "The list of SEQUENCE: instructions found in PR comments"
+  value       = local.sequence_instructions
+}
+
+output "sequence_execution" {
+  description = "The single execution module output (empty if no SEQUENCE: instruction was found)"
+  value       = local.has_sequence ? module.single_execution[0] : null
+}

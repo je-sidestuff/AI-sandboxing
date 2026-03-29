@@ -11,6 +11,7 @@ Terraform external data source interface:
   - Writes a JSON object to stdout with keys:
     - comments_json: JSON-encoded map of ISO-8601 timestamp strings to comment body strings
     - revise_instructions_json: JSON-encoded list of REVISE: instruction strings
+    - sequence_instructions_json: JSON-encoded list of SEQUENCE: instruction strings
     - pr_state: raw GitHub state ("open" or "closed")
     - pr_merged: "true" or "false"
     - pr_merged_at: ISO-8601 timestamp or empty string
@@ -84,6 +85,17 @@ def extract_revise_instructions(comments: dict[str, str]) -> list[str]:
     return instructions
 
 
+def extract_sequence_instructions(comments: dict[str, str]) -> list[str]:
+    """Return the instruction text for any comment starting with 'SEQUENCE:'."""
+    instructions = []
+    for body in comments.values():
+        if body.startswith("SEQUENCE:"):
+            instruction = body[len("SEQUENCE:"):].strip()
+            if instruction:
+                instructions.append(instruction)
+    return instructions
+
+
 def fetch_pr_state(pat: str, repo: str, pr_number: int) -> dict:
     """Fetch PR state including merged status from GitHub API."""
     url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
@@ -119,6 +131,7 @@ def main():
 
     comments = fetch_comments(pat, repo, pr_number)
     revise_instructions = extract_revise_instructions(comments)
+    sequence_instructions = extract_sequence_instructions(comments)
     pr_state_info = fetch_pr_state(pat, repo, pr_number)
 
     # Terraform external data source requires a flat map(string) as output.
@@ -126,6 +139,7 @@ def main():
     output = {
         "comments_json": json.dumps(comments),
         "revise_instructions_json": json.dumps(revise_instructions),
+        "sequence_instructions_json": json.dumps(sequence_instructions),
     }
     output.update(pr_state_info)
     print(json.dumps(output))

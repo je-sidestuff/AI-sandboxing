@@ -75,3 +75,8 @@ output "pr_closed_at" {
   description = "ISO-8601 timestamp when the PR was closed, or empty string if still open"
   value       = local.pr_comments_result.pr_closed_at
 }
+
+output "sequence_instructions_json" {
+  description = "JSON-encoded list of SEQUENCE: instruction strings from PR comments"
+  value       = local.pr_comments_result.sequence_instructions_json
+}
