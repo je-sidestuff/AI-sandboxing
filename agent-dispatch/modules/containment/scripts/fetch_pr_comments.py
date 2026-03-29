@@ -17,6 +17,7 @@ Terraform external data source interface:
     - pr_merged_at: ISO-8601 timestamp or empty string
     - pr_closed_at: ISO-8601 timestamp or empty string
     - conclusion_state: simplified state ("active", "closed", or "merged")
+    - head_ref: the branch name for the PR's head (where commits are pushed)
 
 Usage (standalone):
   echo '{"pat":"ghp_...","repo":"owner/repo","pr_number":"42"}' | python3 fetch_pr_comments.py
@@ -106,6 +107,9 @@ def fetch_pr_state(pat: str, repo: str, pr_number: int) -> dict:
     merged_at = pr_data.get("merged_at") or ""
     closed_at = pr_data.get("closed_at") or ""
 
+    # Extract head branch ref (the branch name where commits are pushed)
+    head_ref = pr_data.get("head", {}).get("ref", "")
+
     # Compute simplified conclusion state
     if state == "open":
         conclusion_state = "active"
@@ -120,6 +124,7 @@ def fetch_pr_state(pat: str, repo: str, pr_number: int) -> dict:
         "pr_merged_at": merged_at,
         "pr_closed_at": closed_at,
         "conclusion_state": conclusion_state,
+        "head_ref": head_ref,
     }
 
 

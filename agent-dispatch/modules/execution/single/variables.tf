@@ -3,13 +3,29 @@
 # You must provide a value for each of these parameters.
 # ---------------------------------------------------------------------------------------------------------------------
 
-variable "branch_name" {
-  description = "The branch to clone from and push changes back to."
+variable "target_pr" {
+  description = <<-EOT
+    The repository and PR where execution should happen. Both values must be
+    known a-priori (not computed from other resources) to enable the count-based
+    filtering pattern that avoids "count cannot be determined until apply" errors.
+
+    - repo: The name of the repository (without owner prefix, e.g., "my-repo")
+    - pr_number: The PR number to execute against. The module will look up the PR
+                 to find its head branch (the branch where commits are pushed).
+  EOT
+  type = object({
+    repo      = string
+    pr_number = number
+  })
+}
+
+variable "github_owner" {
+  description = "The GitHub owner (user or organization) where the repository exists. Must be known a priori."
   type        = string
 }
 
-variable "source_repo_url" {
-  description = "The authenticated HTTPS URL of the repository (e.g., https://PAT@github.com/owner/repo.git)."
+variable "github_pat" {
+  description = "The personal access token used to authenticate with GitHub."
   type        = string
   sensitive   = true
 }
