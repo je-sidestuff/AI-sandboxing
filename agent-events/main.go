@@ -172,12 +172,12 @@ func (m *EventsManager) createDefaultConfigs() error {
 		}
 		log.Printf("[%s] Created default daily report config: %s", m.managerID, dailyPath)
 
-		// Create custom heartbeat report config (timer-based, every 6 hours)
+		// Create custom heartbeat report config (timer-based, every 19 hours)
 		heartbeatConfig := EventConfig{
 			Name:        "custom-heartbeat-report",
 			Type:        EventTypeTimer,
-			Description: "Custom heartbeat report - announces itself on startup and every 6 hours",
-			Interval:    "6h",
+			Description: "Custom heartbeat report - announces itself on startup and every 19 hours",
+			Interval:    "19h",
 			ReportType:  "custom",
 			TopicStyle:  "random_words",
 			Enabled:     true,

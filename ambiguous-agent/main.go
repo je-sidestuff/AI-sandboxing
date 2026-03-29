@@ -332,6 +332,15 @@ func main() {
 			continue
 		}
 
+		// Handle export command specially (persists environment variable)
+		if line == "export" || strings.HasPrefix(line, "export ") {
+			arg := strings.TrimSpace(strings.TrimPrefix(line, "export"))
+			if err := handleExport(arg); err != nil {
+				fmt.Fprintln(os.Stderr, errorStyle.Render(fmt.Sprintf("export: %v", err)))
+			}
+			continue
+		}
+
 		if strings.HasPrefix(line, "set-agent ") {
 			newAgent := strings.TrimSpace(strings.TrimPrefix(line, "set-agent "))
 			if isValidAgent(newAgent) {
@@ -445,6 +454,118 @@ func handleCd(target string, cwd string, oldCwd string) (string, error) {
 		return targetDir, nil // fallback to what we computed
 	}
 	return newCwd, nil
+}
+
+// handleExport processes an export command to set environment variables.
+// Supports: export VAR=value, export VAR="value", export VAR (promotes existing var).
+func handleExport(arg string) error {
+	if arg == "" {
+		// export with no args: list all exported variables (like bash)
+		for _, env := range os.Environ() {
+			fmt.Printf("declare -x %s\n", env)
+		}
+		return nil
+	}
+
+	// Handle multiple exports: export VAR1=val1 VAR2=val2
+	assignments := parseExportArgs(arg)
+	for _, assignment := range assignments {
+		if err := processExportAssignment(assignment); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// parseExportArgs splits export arguments respecting quotes.
+// Returns individual VAR=value or VAR assignments.
+func parseExportArgs(input string) []string {
+	var args []string
+	var current strings.Builder
+	inQuote := false
+	quoteChar := rune(0)
+
+	for _, r := range input {
+		switch {
+		case !inQuote && (r == '"' || r == '\''):
+			inQuote = true
+			quoteChar = r
+			current.WriteRune(r)
+		case inQuote && r == quoteChar:
+			inQuote = false
+			quoteChar = 0
+			current.WriteRune(r)
+		case !inQuote && r == ' ':
+			if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+
+	return args
+}
+
+// processExportAssignment handles a single VAR=value or VAR assignment.
+func processExportAssignment(assignment string) error {
+	// Check if it's VAR=value or just VAR
+	eqIdx := strings.Index(assignment, "=")
+	if eqIdx == -1 {
+		// Just "export VAR" - variable should already exist, nothing to do
+		// (In a real shell this marks it for export to child processes,
+		// but os.Environ() already exports all set variables)
+		if os.Getenv(assignment) == "" {
+			// Variable doesn't exist, but that's fine - bash allows this too
+		}
+		return nil
+	}
+
+	name := assignment[:eqIdx]
+	value := assignment[eqIdx+1:]
+
+	// Validate variable name
+	if name == "" {
+		return fmt.Errorf("invalid variable name")
+	}
+	if !isValidVarName(name) {
+		return fmt.Errorf("'%s': not a valid identifier", name)
+	}
+
+	// Strip outer quotes from value if present
+	if len(value) >= 2 {
+		if (value[0] == '"' && value[len(value)-1] == '"') ||
+			(value[0] == '\'' && value[len(value)-1] == '\'') {
+			value = value[1 : len(value)-1]
+		}
+	}
+
+	return os.Setenv(name, value)
+}
+
+// isValidVarName checks if a string is a valid shell variable name.
+// Valid names start with a letter or underscore, followed by letters, digits, or underscores.
+func isValidVarName(name string) bool {
+	if len(name) == 0 {
+		return false
+	}
+	for i, r := range name {
+		if i == 0 {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_') {
+				return false
+			}
+		} else {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // abbreviatePath shortens a path for display in the prompt.

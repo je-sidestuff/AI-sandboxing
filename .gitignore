@@ -13,6 +13,13 @@ ambiguous-agent/ambiguous-shell
 agent-worker/agent-worker
 agent-events/agent-events
 agent-dispatch/agent-dispatch
+heuristic-request/heuristic-request
+agent-advisor/agent-advisor
+agent-executor/agent-executor
+agent-viewer/agent-viewer
+declarative-tool-tool/declarative-tool-tool
+deprecated-agent-dispatch-watch/deprecated-agent-dispatch-watch
+agent-dispatch/cmd/prpoller/prpoller
 
 # Node.js
 node_modules/
