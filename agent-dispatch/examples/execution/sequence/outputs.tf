@@ -29,7 +29,17 @@ output "sequence_instructions" {
   value       = local.sequence_instructions
 }
 
+output "sequence_commands" {
+  description = "The commands map built from SEQUENCE: instructions (up to 3)"
+  value       = local.sequence_commands
+}
+
 output "sequence_execution" {
-  description = "The single execution module output"
-  value       = module.single_execution
+  description = "The sequence execution module output"
+  value       = module.sequence_execution
+}
+
+output "actual_start_time_millis" {
+  description = "The actual start time - feed this back into start_time_millis on subsequent applies"
+  value       = module.sequence_execution.actual_start_time_millis
 }

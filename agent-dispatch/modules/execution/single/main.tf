@@ -16,25 +16,32 @@ resource "time_static" "execution_time" {}
 # EXISTENCE CHECK: Use data sources with a-priori-known strings to determine
 # if the target repo and PR exist. This avoids "count cannot be determined
 # until apply" errors by never depending on resource-computed attributes.
+#
+# When skip_existence_check=true, these data sources are not queried and we
+# assume the repo/PR exist (the parent module has already verified this).
 # =============================================================================
 
 # Look up repos broadly by owner so the query doesn't depend on computed values.
 # We filter the results below to check if our specific repo exists.
+# Skip this when the parent has already done the check.
 data "github_repositories" "target" {
+  count = var.skip_existence_check ? 0 : 1
   query = "user:${var.github_owner} ${var.target_pr.repo} in:name"
 }
 
 locals {
   # Filter the broad search results to find exactly our repo (empty list = not created yet)
-  repo_match  = [for n in data.github_repositories.target.names : n if n == var.target_pr.repo]
+  # When skipping existence check, assume repo exists.
+  repo_match  = var.skip_existence_check ? [var.target_pr.repo] : [for n in data.github_repositories.target[0].names : n if n == var.target_pr.repo]
   repo_exists = length(local.repo_match) > 0
 }
 
 # Look up the PR details using the external script. This fetches the PR's head_ref
 # (branch name) along with state information. count=0 when repo doesn't exist yet,
 # so this data source is never evaluated until the repo actually exists.
+# Skip this when the parent has already done the check and provided target_branch.
 data "external" "pr_details" {
-  count = local.repo_exists ? 1 : 0
+  count = var.skip_existence_check ? 0 : (local.repo_exists ? 1 : 0)
 
   program = ["python3", "${path.module}/../../containment/scripts/fetch_pr_comments.py"]
 
@@ -46,10 +53,10 @@ data "external" "pr_details" {
 }
 
 locals {
-  # Extract PR details from the external data source
-  pr_result   = local.repo_exists ? data.external.pr_details[0].result : null
-  pr_exists   = local.pr_result != null && try(local.pr_result.head_ref, "") != ""
-  target_branch = local.pr_exists ? local.pr_result.head_ref : ""
+  # Extract PR details from the external data source, or use passed values when skipping checks
+  pr_result   = var.skip_existence_check ? null : (local.repo_exists ? data.external.pr_details[0].result : null)
+  pr_exists   = var.skip_existence_check ? true : (local.pr_result != null && try(local.pr_result.head_ref, "") != "")
+  target_branch = var.skip_existence_check ? var.target_branch : (local.pr_exists ? local.pr_result.head_ref : "")
 
   # The module is ready to execute only when both repo and PR exist
   ready_to_execute = local.repo_exists && local.pr_exists

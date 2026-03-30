@@ -35,15 +35,43 @@ variable "dispatcher_name" {
   type        = string
 }
 
-variable "instruction" {
-  description = "The instruction to pass to the AI agent for this execution step."
-  type        = string
+variable "commands" {
+  description = <<-EOT
+    A map of step numbers to command strings. The keys must be continuous integers
+    starting from 1 (e.g., {1 = "cmd1", 2 = "cmd2", 3 = "cmd3"}). Each command
+    will be passed to a single execution module in sequence.
+  EOT
+  type = map(string)
+
+  validation {
+    condition = alltrue([
+      for k, v in var.commands : can(tonumber(k)) && tonumber(k) >= 1
+    ])
+    error_message = "All command keys must be positive integers starting from 1."
+  }
 }
 
 # ---------------------------------------------------------------------------------------------------------------------
 # OPTIONAL PARAMETERS
 # These parameters have reasonable defaults.
 # ---------------------------------------------------------------------------------------------------------------------
+
+variable "start_time_millis" {
+  description = <<-EOT
+    The start time in milliseconds for the sequence. On first run, this defaults
+    to a far-future date (year 3000). The module outputs an actual_start_time_millis
+    that should be fed back into this variable on subsequent applies to enable
+    time-based step activation.
+  EOT
+  type    = number
+  default = 32503680000000 # Year 3000 in milliseconds
+}
+
+variable "minutes_between_steps" {
+  description = "The number of minutes to wait between each step in the sequence."
+  type        = number
+  default     = 20
+}
 
 variable "slopspaces_working_dir" {
   description = "The working directory for slopspaces containment operations."
@@ -55,26 +83,4 @@ variable "instruction_mode" {
   description = "The instruction mode for the AI agent (execute or other modes)."
   type        = string
   default     = "execute"
-}
-
-variable "target_branch" {
-  description = <<-EOT
-    Optional: The target branch to use for execution. When provided along with
-    skip_existence_check=true, the module will skip querying GitHub for repo/PR
-    existence and use this branch directly. This is useful when the parent module
-    has already verified existence and fetched the branch name.
-  EOT
-  type        = string
-  default     = ""
-}
-
-variable "skip_existence_check" {
-  description = <<-EOT
-    When true, skip the data source queries for repo/PR existence and assume
-    the repo and PR exist. The target_branch variable must be provided when
-    this is true. This avoids the "count cannot be determined until apply"
-    error when this module has depends_on referencing modules with pending changes.
-  EOT
-  type        = bool
-  default     = false
 }

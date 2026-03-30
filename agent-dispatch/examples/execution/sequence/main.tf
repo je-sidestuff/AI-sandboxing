@@ -24,22 +24,30 @@ module "ai_containment" {
 
 # Parse SEQUENCE: instructions from the containment PR comments
 locals {
-  sequence_instructions = jsondecode(module.ai_containment.sequence_instructions_json)
+  sequence_instructions = [
+    "We're writing a story about cats - write chapter 1 in docs/CHAPTER1.md",
+    "We're writing a story about cats - write chapter 2 in docs/CHAPTER2.md",
+    "We're writing a story about cats - write chapter 3 in docs/CHAPTER3.md"
+  ]
   has_sequence          = length(local.sequence_instructions) > 0
 
-  # For now, we only use the first SEQUENCE: instruction (just one instance)
-  first_sequence_instruction = local.has_sequence ? local.sequence_instructions[0] : ""
+  # Build a commands map from the first 3 SEQUENCE: instructions
+  # The sequence module expects a map with string keys "1", "2", "3", etc.
+  sequence_commands = {
+    for i in range(min(3, length(local.sequence_instructions))) :
+    tostring(i + 1) => local.sequence_instructions[i]
+  }
 }
 
-# Execute the single execution step when a SEQUENCE: comment is posted.
+# Execute a 3-command sequence when SEQUENCE: comments are posted.
 # This module uses the count-based filtering pattern internally - it checks
 # if the target repo and PR exist, and only executes when both conditions
 # are met. The PR number is known a-priori (always 1 for new repos).
 #
-# On first apply: repo and PR don't exist yet, module.single_execution.ready_to_execute = false
-# On second apply: repo and PR exist, module checks and executes when ready
-module "single_execution" {
-  source = "../../../modules/execution/single"
+# On first apply: repo and PR don't exist yet, module won't execute any steps
+# On subsequent applies: steps activate based on time elapsed since start_time_millis
+module "sequence_execution" {
+  source = "../../../modules/execution/sequence"
 
   target_pr = {
     repo      = local.target_repo_name
@@ -49,6 +57,8 @@ module "single_execution" {
   github_owner           = var.github_owner
   github_pat             = var.github_pat
   dispatcher_name        = "${var.dispatcher_name}-sequence"
-  instruction            = local.first_sequence_instruction
+  commands               = local.sequence_commands
+  start_time_millis      = var.start_time_millis
+  minutes_between_steps  = var.minutes_between_steps
   slopspaces_working_dir = var.slopspaces_working_dir
 }
