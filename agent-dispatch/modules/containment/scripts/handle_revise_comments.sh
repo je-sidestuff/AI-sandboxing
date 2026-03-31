@@ -120,6 +120,27 @@ PYEOF
     echo "Step 8: Restoring git state and pushing to ${BRANCH_NAME}..."
     mv "${OUTER_DIR}/git_state/.git" "${OUTPUT_DIR}/.git"
     cd "${OUTPUT_DIR}" || clean_up_and_report_failure "$OUTER_DIR" "" "Failed to cd into output directory"
+
+    # Debug: show current git state before any changes
+    echo "Current git HEAD before fix:"
+    cat .git/HEAD
+    echo "Branches available:"
+    git branch -a 2>/dev/null || echo "(git branch failed)"
+
+    # After restoring .git, force checkout the target branch to ensure git recognizes it.
+    echo "Force checking out branch: ${BRANCH_NAME}..."
+    git checkout -f "${BRANCH_NAME}" || {
+        echo "Checkout failed, trying alternative approach..."
+        git symbolic-ref HEAD "refs/heads/${BRANCH_NAME}"
+    }
+
+    echo "Current branch after checkout:"
+    git branch --show-current || echo "(no branch)"
+
+    # Reset the index and stage working tree changes
+    echo "Resetting git index..."
+    git reset --mixed
+
     git add --all
     git commit -m "REVISE: AI-applied changes from dispatcher ${DISPATCHER_NAME} (instruction $((i + 1)))"
     git push --set-upstream origin "$BRANCH_NAME"

@@ -143,7 +143,41 @@ done
 echo "Processing complete. Restoring git state and pushing..."
 mv "${OUTER_DIR}/git_state/.git" "${OUTPUT_DIR}/.git"
 cd "${OUTPUT_DIR}" || clean_up_and_report_failure "Failed to change directory to output repository"
+
+# Debug: show current git state before any changes
+echo "Current git HEAD before fix:"
+cat .git/HEAD
+echo "Branches available:"
+git branch -a 2>/dev/null || echo "(git branch failed)"
+
+# After restoring .git, we need to ensure we're on the correct branch.
+# The issue is that .git/HEAD might point to a branch ref, but git doesn't
+# automatically recognize the new working directory as being on that branch.
+#
+# We use a two-step approach:
+# 1. Explicitly checkout the branch (this updates HEAD and sets up tracking)
+# 2. Reset the index to avoid conflicts with the changed working tree
+#
+# Note: We use -f to force checkout even with a dirty working tree
+echo "Force checking out branch: ${BRANCH_NAME}..."
+git checkout -f "${BRANCH_NAME}" || {
+    echo "Checkout failed, trying alternative approach..."
+    # If checkout fails, the branch might not exist locally but exists on remote
+    # Try to create it from remote tracking or as orphan
+    git symbolic-ref HEAD "refs/heads/${BRANCH_NAME}"
+}
+
+echo "Current branch after checkout:"
+git branch --show-current || echo "(no branch)"
+
+# Reset the index to match the branch's latest commit, then stage working tree changes
+echo "Resetting git index..."
+git reset --mixed
+
+# Stage all current files
 git add --all
+
+# Commit and push
 git commit -m "AI-generated changes from dispatcher ${DISPATCHER_NAME}"
 git push --set-upstream origin "$BRANCH_NAME"
 
