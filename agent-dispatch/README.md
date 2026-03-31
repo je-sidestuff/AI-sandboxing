@@ -139,6 +139,59 @@ If `isolation_name` is not specified, a unique name is auto-generated.
 
 Requires `GITHUB_PAT` or `GH_TOKEN` environment variable.
 
+### Sequence-to-New-Repo Dispatch
+
+Creates a brand new repository and executes a sequence of commands over time. Each command activates after a configurable interval (default: 20 minutes). The dispatcher's watch loop performs `terraform apply` periodically, activating steps as time progresses.
+
+This flow is useful for:
+- Multi-step tasks that need human review time between steps
+- Long-running workflows with natural breakpoints
+- Tasks requiring incremental commits and feedback
+
+**DISPATCH.json:**
+```json
+{
+  "type": "sequence-to-new-repo",
+  "instruction": "Initial setup - create the project scaffold",
+  "sequence_commands": [
+    "Write chapter 1 of the documentation in docs/CHAPTER1.md",
+    "Write chapter 2 of the documentation in docs/CHAPTER2.md",
+    "Write chapter 3 of the documentation in docs/CHAPTER3.md"
+  ],
+  "sequence_minutes_between": 20
+}
+```
+
+**Fields:**
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `type` | Yes | - | Must be `"sequence-to-new-repo"` |
+| `instruction` | Yes | - | Initial instruction for the containment PR |
+| `sequence_commands` | Yes | - | Array of instructions to execute in sequence |
+| `sequence_minutes_between` | No | 20 | Minutes between each step |
+| `mode` | No | "execute" | Mode for all instructions ("execute" or "prompt") |
+| `skip_approval` | No | false | Skip the approval gate (use with caution) |
+
+**How it works:**
+1. Dispatcher creates a new repository named `seq-<timestamp>-<id>`
+2. Initial terraform apply creates the repo, PR #1, and captures the start time
+3. The watch loop runs terraform apply every minute (periodic poll)
+4. Steps activate based on elapsed time since first apply:
+   - Step 1: immediately after repo/PR creation
+   - Step 2: after `minutes_between` minutes
+   - Step 3: after `2 * minutes_between` minutes
+   - etc.
+5. Flow completes when all steps have executed and PR is merged/closed
+
+**Monitoring progress:**
+The dispatcher logs sequence progress during polling:
+```
+[abc12345] Flow sequence-to-new-repo_2024-03-21_12-30-00_xyz Flow sequence progress: 2/3 steps ready
+[abc12345] Flow sequence-to-new-repo_2024-03-21_12-30-00_xyz next step in ~8 minutes
+```
+
+Requires `GITHUB_PAT` or `GH_TOKEN` environment variable.
+
 ## Data Flow
 
 ### Watch Mode Flow
@@ -156,9 +209,15 @@ INPUT_DIR/any/<dispatch-id>/
         │                     └── Run terraform init/apply
         │                     └── Move to OUTPUT_DIR with DISPATCH_PROCESSED.md
         │
-        └─[repo-isolation]──► Create terraform config (separate isolation repo)
-                              └── Run terraform init/apply
-                              └── Move to OUTPUT_DIR with DISPATCH_PROCESSED.md
+        ├─[repo-isolation]──► Create terraform config (separate isolation repo)
+        │                     └── Run terraform init/apply
+        │                     └── Move to OUTPUT_DIR with DISPATCH_PROCESSED.md
+        │
+        └─[sequence-to-new-repo]──► Create new repo + terraform config
+                              └── Run terraform init/apply (creates repo + PR)
+                              └── Watch loop runs apply every ~1 min
+                              └── Steps activate based on elapsed time
+                              └── Cleanup after all steps complete + PR merged/closed
 ```
 
 ### Single-Shot Mode Flow
@@ -243,4 +302,93 @@ agent-dispatch -r daily
 # === Dispatch Result ===
 # Work Unit ID: dispatch-report_2024-03-21_12-30-00_abc12345
 # Success:      true
+```
+
+## Testing the Sequence-to-New-Repo Flow
+
+### Prerequisites
+
+1. Ensure `GITHUB_PAT` or `GH_TOKEN` is set with repo creation permissions
+2. Ensure `GITHUB_OWNER` is set (defaults to `je-sidestuff`)
+3. Build agent-dispatch: `cd agent-dispatch && go build -o agent-dispatch .`
+4. Start the dispatcher: `./agent-dispatch` (runs in watch mode)
+
+### Quick Test (2-minute intervals)
+
+For testing purposes, use a short interval. Create a test dispatch:
+
+```bash
+# Create the dispatch directory
+mkdir -p /workspaces/slopspaces/input/any/test-sequence-$(date +%s)
+
+# Write the DISPATCH.json
+cat > /workspaces/slopspaces/input/any/test-sequence-$(date +%s)/DISPATCH.json << 'EOF'
+{
+  "type": "sequence-to-new-repo",
+  "instruction": "Create a simple test project scaffold with a README.md file",
+  "sequence_commands": [
+    "Add a file docs/step1.md with content about step 1",
+    "Add a file docs/step2.md with content about step 2",
+    "Add a file docs/step3.md with content about step 3"
+  ],
+  "sequence_minutes_between": 2,
+  "skip_approval": true
+}
+EOF
+```
+
+### What to Expect
+
+1. **Initial dispatch** (within 10 seconds):
+   - Dispatcher picks up the DISPATCH.json
+   - Creates a new repo: `seq-<timestamp>-<id>`
+   - Creates PR #1 with the initial instruction
+   - Captures start time for sequencing
+
+2. **Step activation** (every 2 minutes):
+   - Watch loop polls every minute
+   - Step 1 activates immediately after repo creation
+   - Step 2 activates after 2 minutes
+   - Step 3 activates after 4 minutes
+
+3. **Monitoring logs**:
+   ```
+   [abc123] Processing sequence-to-new-repo dispatch: test-sequence-...
+   [abc123] Running terraform init in .../flows/sequence-to-new-repo/...
+   [abc123] Running terraform apply in ... (initial apply)
+   [abc123] Captured sequence start time: 1711032600000 ms
+   [abc123] Sequence-to-new-repo dispatch created, PR URL: https://github.com/owner/seq-.../pull/1
+   [abc123] Target repo: owner/seq-... (3 steps, 2 min intervals)
+   ...
+   [abc123] Flow sequence-to-new-repo_... sequence progress: 1/3 steps ready
+   [abc123] Flow sequence-to-new-repo_... next step in ~2 minutes
+   ```
+
+4. **Cleanup**:
+   - After all steps complete AND the PR is merged/closed, the flow is cleaned up
+   - Flow record is updated with `status: completed`
+
+### Verifying State
+
+Check active flows:
+```bash
+# List flow records
+ls -la /workspaces/slopspaces/agent-records/dispatch-watch/
+
+# View a specific flow record
+cat /workspaces/slopspaces/agent-records/dispatch-watch/flow_sequence-to-new-repo_*.json | jq .
+
+# Check terraform state
+cd /workspaces/slopspaces/dispatcher/live/flows/sequence-to-new-repo/<flow-id>
+terraform output
+```
+
+### Manual Step Verification
+
+Force an immediate terraform apply to check step status:
+```bash
+cd /workspaces/slopspaces/dispatcher/live/flows/sequence-to-new-repo/<flow-id>
+terraform apply -auto-approve
+terraform output step_readiness
+terraform output sequence_complete
 ```

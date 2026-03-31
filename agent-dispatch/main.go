@@ -39,10 +39,11 @@ const (
 
 // Dispatch type constants
 const (
-	DispatchTypeDirect        = "direct"
-	DispatchTypeInRepo        = "in-repo"
-	DispatchTypeRepoIsolation = "repo-isolation"
-	DispatchTypeApproval      = "approval"
+	DispatchTypeDirect            = "direct"
+	DispatchTypeInRepo            = "in-repo"
+	DispatchTypeRepoIsolation     = "repo-isolation"
+	DispatchTypeApproval          = "approval"
+	DispatchTypeSequenceToNewRepo = "sequence-to-new-repo"
 )
 
 // Conclusion state constants for isolation PR
@@ -87,7 +88,7 @@ type Report struct {
 
 // Dispatch represents the JSON structure for dispatch work units (watch mode)
 type Dispatch struct {
-	Type            string            `json:"type"`                      // "direct", "in-repo", "repo-isolation" (NOT "approval" - approval is automatic)
+	Type            string            `json:"type"`                      // "direct", "in-repo", "repo-isolation", "sequence-to-new-repo" (NOT "approval" - approval is automatic)
 	Instruction     string            `json:"instruction"`               // The instruction to dispatch
 	Mode            string            `json:"mode,omitempty"`            // "prompt" or "execute" (default: "execute")
 	Agent           string            `json:"agent,omitempty"`           // Optional agent override
@@ -99,7 +100,11 @@ type Dispatch struct {
 	SourceContext   string            `json:"source_context,omitempty"`  // Description of request origin
 	SkipApproval    bool              `json:"skip_approval,omitempty"`   // If true, skip the approval gate (use with caution!)
 	Timestamp       string            `json:"timestamp,omitempty"`
-	Metadata        map[string]string `json:"metadata,omitempty"` // Additional metadata
+	Metadata        map[string]string `json:"metadata,omitempty"`        // Additional metadata
+
+	// Sequence-to-new-repo specific fields
+	SequenceCommands       []string `json:"sequence_commands,omitempty"`        // For sequence-to-new-repo: list of sequential commands
+	SequenceMinutesBetween int      `json:"sequence_minutes_between,omitempty"` // For sequence-to-new-repo: minutes between steps (default: 20)
 }
 
 // DispatchResult represents the result of a dispatched work unit
@@ -158,6 +163,12 @@ type FlowRecord struct {
 	PendingMode        string    `json:"pending_mode,omitempty"`        // For approval (legacy): mode for pending instruction
 	PendingAgent       string    `json:"pending_agent,omitempty"`       // For approval (legacy): agent override for pending instruction
 	PendingDispatch    *Dispatch `json:"pending_dispatch,omitempty"`    // For approval-gated flows: full dispatch to execute after approval
+
+	// Sequence-to-new-repo specific fields
+	SequenceStartTimeMillis  int64 `json:"sequence_start_time_millis,omitempty"`  // For sequence flows: the captured start time from first apply
+	SequenceMinutesBetween   int   `json:"sequence_minutes_between,omitempty"`    // For sequence flows: minutes between steps
+	SequenceLastCompletedIdx int   `json:"sequence_last_completed_idx,omitempty"` // For sequence flows: last completed step index (0-based)
+	SequenceTotalSteps       int   `json:"sequence_total_steps,omitempty"`        // For sequence flows: total number of steps
 }
 
 // Dispatcher manages dispatching work units and collecting results
@@ -302,6 +313,7 @@ func (d *Dispatcher) ensureDirectories() error {
 		filepath.Join(d.recordsDir, "dispatch-watch"),
 		filepath.Join(d.dispatcherLive, "flows", "in-repo"),
 		filepath.Join(d.dispatcherLive, "flows", "repo-isolation"),
+		filepath.Join(d.dispatcherLive, "flows", "sequence-to-new-repo"),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -759,8 +771,8 @@ func (d *Dispatcher) handleDispatchFiles(folderPath string) (*Dispatch, error) {
 		}
 
 		// Validate type
-		if dispatch.Type != DispatchTypeDirect && dispatch.Type != DispatchTypeInRepo && dispatch.Type != DispatchTypeRepoIsolation && dispatch.Type != DispatchTypeApproval {
-			return nil, fmt.Errorf("invalid dispatch type: %s (must be 'direct', 'in-repo', 'repo-isolation', or 'approval')", dispatch.Type)
+		if dispatch.Type != DispatchTypeDirect && dispatch.Type != DispatchTypeInRepo && dispatch.Type != DispatchTypeRepoIsolation && dispatch.Type != DispatchTypeApproval && dispatch.Type != DispatchTypeSequenceToNewRepo {
+			return nil, fmt.Errorf("invalid dispatch type: %s (must be 'direct', 'in-repo', 'repo-isolation', 'sequence-to-new-repo', or 'approval')", dispatch.Type)
 		}
 
 		// Default mode to execute
@@ -841,6 +853,8 @@ func (d *Dispatcher) processDispatchUnit(unit DispatchUnit) error {
 	case DispatchTypeApproval:
 		// Legacy: explicit approval type (for backwards compatibility)
 		err = d.processApprovalDispatch(unit)
+	case DispatchTypeSequenceToNewRepo:
+		err = d.processSequenceToNewRepoDispatch(unit)
 	default:
 		err = fmt.Errorf("unsupported dispatch type: %s", unit.Dispatch.Type)
 	}
@@ -1110,6 +1124,179 @@ func (d *Dispatcher) processRepoIsolationDispatch(unit DispatchUnit) error {
 
 	log.Printf("[%s] Repo-isolation dispatch flow %s now monitoring for conclusion", d.dispatcherID, flowID)
 	return nil
+}
+
+// processSequenceToNewRepoDispatch handles sequence-to-new-repo dispatch with terraform lifecycle
+// This creates a new repository and executes a sequence of commands with time-based step activation.
+// The dispatcher will continue to run terraform apply at the configured interval until all steps complete.
+func (d *Dispatcher) processSequenceToNewRepoDispatch(unit DispatchUnit) error {
+	log.Printf("[%s] Processing sequence-to-new-repo dispatch: %s", d.dispatcherID, unit.ID)
+
+	if d.githubPAT == "" {
+		return fmt.Errorf("GITHUB_PAT or GH_TOKEN environment variable is required for sequence-to-new-repo dispatch")
+	}
+
+	// Validate that we have sequence commands
+	if len(unit.Dispatch.SequenceCommands) == 0 {
+		return fmt.Errorf("sequence-to-new-repo dispatch requires at least one command in sequence_commands")
+	}
+
+	// Get minutes between steps, default to 20
+	minutesBetween := unit.Dispatch.SequenceMinutesBetween
+	if minutesBetween <= 0 {
+		minutesBetween = 20
+	}
+
+	// Generate a unique target repo name
+	timestamp := time.Now().Format("20060102-150405")
+	shortID := uuid.New().String()[:8]
+	targetRepoName := fmt.Sprintf("seq-%s-%s", timestamp, shortID)
+
+	// Generate a unique flow ID
+	flowID := generateFlowID(DispatchTypeSequenceToNewRepo)
+
+	// Create the terraform config directory
+	tfConfigDir := filepath.Join(d.dispatcherLive, "flows", "sequence-to-new-repo", flowID)
+	if err := os.MkdirAll(tfConfigDir, 0755); err != nil {
+		return fmt.Errorf("failed to create terraform config directory: %w", err)
+	}
+
+	// Write the flow record
+	flowRecord := FlowRecord{
+		DispatcherID:           d.dispatcherID,
+		FlowID:                 flowID,
+		DispatchType:           DispatchTypeSequenceToNewRepo,
+		DispatchPath:           unit.Path,
+		TFConfigDir:            tfConfigDir,
+		StartTime:              time.Now().Format(time.RFC3339),
+		Status:                 "running",
+		SequenceMinutesBetween: minutesBetween,
+		SequenceTotalSteps:     len(unit.Dispatch.SequenceCommands),
+	}
+	d.writeFlowRecord(flowRecord)
+
+	// Create the terraform configuration
+	if err := d.createSequenceToNewRepoTerraformConfig(tfConfigDir, flowID, targetRepoName, unit.Dispatch); err != nil {
+		flowRecord.Status = "failed"
+		flowRecord.Error = err.Error()
+		flowRecord.EndTime = time.Now().Format(time.RFC3339)
+		d.writeFlowRecord(flowRecord)
+		return fmt.Errorf("failed to create terraform config: %w", err)
+	}
+
+	// Run terraform init
+	log.Printf("[%s] Running terraform init in %s", d.dispatcherID, tfConfigDir)
+	if err := d.runTerraform(tfConfigDir, "init"); err != nil {
+		flowRecord.Status = "failed"
+		flowRecord.Error = fmt.Sprintf("terraform init failed: %v", err)
+		flowRecord.EndTime = time.Now().Format(time.RFC3339)
+		d.writeFlowRecord(flowRecord)
+		return fmt.Errorf("terraform init failed: %w", err)
+	}
+
+	// Run terraform apply (first apply - creates repo and PR, captures start time)
+	log.Printf("[%s] Running terraform apply in %s (initial apply)", d.dispatcherID, tfConfigDir)
+	if err := d.runTerraform(tfConfigDir, "apply", "-auto-approve"); err != nil {
+		flowRecord.Status = "failed"
+		flowRecord.Error = fmt.Sprintf("terraform apply failed: %v", err)
+		flowRecord.EndTime = time.Now().Format(time.RFC3339)
+		d.writeFlowRecord(flowRecord)
+		return fmt.Errorf("terraform apply failed: %w", err)
+	}
+
+	// Get the actual_start_time_millis from the first apply and update tfvars
+	actualStartTimeStr, err := d.getTerraformOutput(tfConfigDir, "actual_start_time_millis")
+	if err == nil && actualStartTimeStr != "" {
+		var actualStartTime int64
+		fmt.Sscanf(actualStartTimeStr, "%d", &actualStartTime)
+		if actualStartTime > 0 {
+			flowRecord.SequenceStartTimeMillis = actualStartTime
+			log.Printf("[%s] Captured sequence start time: %d ms", d.dispatcherID, actualStartTime)
+
+			// Update terraform.tfvars with the captured start time
+			if err := d.updateSequenceTfvarsStartTime(tfConfigDir, actualStartTime); err != nil {
+				log.Printf("[%s] Warning: failed to update tfvars with start time: %v", d.dispatcherID, err)
+			}
+		}
+	}
+
+	// Enter monitoring phase - the watch loop will continue terraform applies at the interval
+	flowRecord.Status = "monitoring"
+	flowRecord.NeedsMonitoring = true
+	flowRecord.LastPollTime = time.Now().Format(time.RFC3339)
+
+	// Get the initial conclusion state and PR URL
+	conclusionState, _ := d.getTerraformOutput(tfConfigDir, "conclusion_state")
+	flowRecord.ConclusionState = conclusionState
+
+	prURL, _ := d.getTerraformOutput(tfConfigDir, "pr_url")
+	if prURL != "" {
+		flowRecord.PRUrl = prURL
+		log.Printf("[%s] Sequence-to-new-repo dispatch created, PR URL: %s", d.dispatcherID, prURL)
+	}
+
+	targetRepoFullName, _ := d.getTerraformOutput(tfConfigDir, "target_repo_full_name")
+	if targetRepoFullName != "" {
+		log.Printf("[%s] Target repo: %s (%d steps, %d min intervals)", d.dispatcherID, targetRepoFullName, len(unit.Dispatch.SequenceCommands), minutesBetween)
+	}
+
+	d.writeFlowRecord(flowRecord)
+
+	// Register PR for monitoring
+	if d.prPoller != nil && prURL != "" {
+		prNumberStr, _ := d.getTerraformOutput(tfConfigDir, "pr_number")
+		if targetRepoFullName != "" && prNumberStr != "" {
+			var prNumber int
+			fmt.Sscanf(prNumberStr, "%d", &prNumber)
+
+			parts := strings.SplitN(targetRepoFullName, "/", 2)
+			if len(parts) == 2 && prNumber > 0 {
+				owner, repo := parts[0], parts[1]
+				d.prPoller.Register(prpoller.PRRegistration{
+					Owner:  owner,
+					Repo:   repo,
+					Number: prNumber,
+					OnChange: func(event prpoller.ChangeEvent) {
+						log.Printf("[%s] Detected %d new comment(s) on %s (will be processed by monitoring loop)",
+							d.dispatcherID, len(event.NewComments), prURL)
+					},
+				})
+				log.Printf("[%s] Registered PR %s/%s#%d for comment monitoring", d.dispatcherID, owner, repo, prNumber)
+			}
+		}
+	}
+
+	log.Printf("[%s] Sequence-to-new-repo dispatch flow %s now monitoring (applies every %d min)", d.dispatcherID, flowID, minutesBetween)
+	return nil
+}
+
+// updateSequenceTfvarsStartTime updates the terraform.tfvars file with the captured start time
+func (d *Dispatcher) updateSequenceTfvarsStartTime(configDir string, startTimeMillis int64) error {
+	tfvarsPath := filepath.Join(configDir, "terraform.tfvars")
+	content, err := os.ReadFile(tfvarsPath)
+	if err != nil {
+		return err
+	}
+
+	// Replace the start_time_millis line
+	lines := strings.Split(string(content), "\n")
+	var newLines []string
+	found := false
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "start_time_millis") {
+			newLines = append(newLines, fmt.Sprintf("start_time_millis    = %d", startTimeMillis))
+			found = true
+		} else {
+			newLines = append(newLines, line)
+		}
+	}
+
+	// If not found, append it
+	if !found {
+		newLines = append(newLines, fmt.Sprintf("start_time_millis    = %d", startTimeMillis))
+	}
+
+	return os.WriteFile(tfvarsPath, []byte(strings.Join(newLines, "\n")), 0644)
 }
 
 // createApprovalGatedDispatch gates a dispatch through the approval flow
@@ -1542,6 +1729,269 @@ github_owner     = "%s"
 instruction      = "%s"
 instruction_mode = "%s"
 `, d.githubPAT, d.githubOwner, escapedInstruction, mode)
+
+	// Write all the files
+	files := map[string]string{
+		"providers.tf":     providersTF,
+		"variables.tf":     variablesTF,
+		"main.tf":          mainTF,
+		"outputs.tf":       outputsTF,
+		"terraform.tfvars": tfvarsTF,
+	}
+
+	for filename, content := range files {
+		path := filepath.Join(configDir, filename)
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			return fmt.Errorf("failed to write %s: %w", filename, err)
+		}
+	}
+
+	// Also write a dispatch record to the config dir for reference
+	dispatchData, _ := json.MarshalIndent(dispatch, "", "  ")
+	if err := os.WriteFile(filepath.Join(configDir, "DISPATCH_RECORD.json"), dispatchData, 0644); err != nil {
+		log.Printf("Warning: failed to write dispatch record: %v", err)
+	}
+
+	return nil
+}
+
+// createSequenceToNewRepoTerraformConfig creates the terraform configuration for sequence-to-new-repo dispatch
+func (d *Dispatcher) createSequenceToNewRepoTerraformConfig(configDir, flowID, targetRepoName string, dispatch *Dispatch) error {
+	// Get the paths to the modules
+	exe, err := os.Executable()
+	var toRepoModulePath, sequenceModulePath string
+	if err == nil {
+		toRepoModulePath = filepath.Join(filepath.Dir(exe), "modules", "containment", "to-repo")
+		sequenceModulePath = filepath.Join(filepath.Dir(exe), "modules", "execution", "sequence")
+		if _, err := os.Stat(toRepoModulePath); err != nil {
+			// Try from CWD
+			cwd, _ := os.Getwd()
+			toRepoModulePath = filepath.Join(cwd, "agent-dispatch", "modules", "containment", "to-repo")
+			sequenceModulePath = filepath.Join(cwd, "agent-dispatch", "modules", "execution", "sequence")
+		}
+	}
+
+	// Default to absolute paths if nothing works
+	if toRepoModulePath == "" || !fileExists(toRepoModulePath) {
+		toRepoModulePath = "/workspaces/workspace/sandbox/AI-sandboxing/agent-dispatch/modules/containment/to-repo"
+	}
+	if sequenceModulePath == "" || !fileExists(sequenceModulePath) {
+		sequenceModulePath = "/workspaces/workspace/sandbox/AI-sandboxing/agent-dispatch/modules/execution/sequence"
+	}
+
+	// Create providers.tf
+	providersTF := `terraform {
+  required_providers {
+    github = {
+      source  = "integrations/github"
+      version = "~> 6.0"
+    }
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.9"
+    }
+    external = {
+      source  = "hashicorp/external"
+      version = "~> 2.3"
+    }
+  }
+}
+
+provider "github" {
+  token = var.github_pat
+}
+`
+
+	// Create variables.tf
+	variablesTF := `variable "github_pat" {
+  description = "GitHub Personal Access Token"
+  type        = string
+  sensitive   = true
+}
+
+variable "github_owner" {
+  description = "The GitHub owner (user or organization)"
+  type        = string
+}
+
+variable "target_repo_name" {
+  description = "The name of the target repository to create"
+  type        = string
+}
+
+variable "instruction" {
+  description = "The initial instruction for the containment PR"
+  type        = string
+}
+
+variable "instruction_mode" {
+  description = "The mode for the instruction (execute or prompt)"
+  type        = string
+  default     = "execute"
+}
+
+variable "sequence_commands" {
+  description = "List of commands to execute in sequence"
+  type        = list(string)
+}
+
+variable "start_time_millis" {
+  description = "The start time in milliseconds for sequence timing. Use far-future on first apply, then feed back actual_start_time_millis."
+  type        = number
+  default     = 32503680000000  # Year 3000 - no steps will activate on first apply
+}
+
+variable "minutes_between_steps" {
+  description = "Number of minutes between each step in the sequence"
+  type        = number
+  default     = 20
+}
+`
+
+	// Get mode from dispatch, default to "execute"
+	mode := "execute"
+	if dispatch.Mode != "" {
+		mode = dispatch.Mode
+	}
+
+	// Get minutes between steps
+	minutesBetween := dispatch.SequenceMinutesBetween
+	if minutesBetween <= 0 {
+		minutesBetween = 20
+	}
+
+	// Create main.tf with module references
+	mainTF := fmt.Sprintf(`# Local to compute target repo name a-priori
+locals {
+  target_repo_name = var.target_repo_name
+
+  # The containment module always creates PR #1 in the new target repository.
+  expected_pr_number = 1
+
+  # Build the commands map from the sequence_commands list
+  sequence_commands = {
+    for i, cmd in var.sequence_commands :
+    tostring(i + 1) => cmd
+  }
+}
+
+# Create the target repository and initial containment PR
+module "ai_containment" {
+  source = "%s"
+
+  target_repo_name       = local.target_repo_name
+  dispatcher_name        = "%s"
+  github_pat             = var.github_pat
+  github_owner           = var.github_owner
+  slopspaces_working_dir = "/workspaces/slopspaces/working/"
+  instruction            = var.instruction
+  instruction_mode       = var.instruction_mode
+}
+
+# Execute the sequence of commands
+module "sequence_execution" {
+  source = "%s"
+
+  target_pr = {
+    repo      = local.target_repo_name
+    pr_number = local.expected_pr_number
+  }
+
+  github_owner           = var.github_owner
+  github_pat             = var.github_pat
+  dispatcher_name        = "%s-sequence"
+  commands               = local.sequence_commands
+  start_time_millis      = var.start_time_millis
+  minutes_between_steps  = var.minutes_between_steps
+  slopspaces_working_dir = "/workspaces/slopspaces/working/"
+}
+`, toRepoModulePath, flowID, sequenceModulePath, flowID)
+
+	// Create outputs.tf
+	outputsTF := `# Containment outputs
+output "target_repo_full_name" {
+  description = "The full name (owner/repo) of the created target repository"
+  value       = module.ai_containment.target_repo_full_name
+}
+
+output "pr_url" {
+  description = "The URL of the containment PR in the target repo"
+  value       = module.ai_containment.pr_url
+}
+
+output "pr_number" {
+  description = "The PR number for the containment PR"
+  value       = module.ai_containment.pr_number
+}
+
+output "conclusion_state" {
+  description = "Simplified conclusion state: 'active', 'closed', or 'merged'"
+  value       = module.ai_containment.conclusion_state
+}
+
+output "branch_name" {
+  description = "The name of the containment branch"
+  value       = module.ai_containment.branch_name
+}
+
+# Sequence execution outputs
+output "actual_start_time_millis" {
+  description = "The actual start time - feed this back into start_time_millis on subsequent applies"
+  value       = module.sequence_execution.actual_start_time_millis
+}
+
+output "current_time_millis" {
+  description = "The current time in milliseconds (at time of last apply)"
+  value       = module.sequence_execution.current_time_millis
+}
+
+output "elapsed_millis" {
+  description = "Milliseconds elapsed since the configured start_time_millis"
+  value       = module.sequence_execution.elapsed_millis
+}
+
+output "step_readiness" {
+  description = "Map of step numbers to their readiness status (for debugging)"
+  value       = module.sequence_execution.step_readiness
+}
+
+output "commands_count" {
+  description = "The number of commands in the sequence"
+  value       = module.sequence_execution.commands_count
+}
+
+output "sequence_complete" {
+  description = "Whether all sequence steps have completed (all ready steps == total steps)"
+  value       = alltrue([for k, v in module.sequence_execution.step_readiness : v])
+}
+`
+
+	// Escape the instruction for Terraform HCL
+	escapedInstruction := strings.ReplaceAll(dispatch.Instruction, "\\", "\\\\")
+	escapedInstruction = strings.ReplaceAll(escapedInstruction, "\"", "\\\"")
+	escapedInstruction = strings.ReplaceAll(escapedInstruction, "\n", "\\n")
+
+	// Build the sequence commands list for HCL
+	var cmdListItems []string
+	for _, cmd := range dispatch.SequenceCommands {
+		escapedCmd := strings.ReplaceAll(cmd, "\\", "\\\\")
+		escapedCmd = strings.ReplaceAll(escapedCmd, "\"", "\\\"")
+		escapedCmd = strings.ReplaceAll(escapedCmd, "\n", "\\n")
+		cmdListItems = append(cmdListItems, fmt.Sprintf("  \"%s\"", escapedCmd))
+	}
+	sequenceCommandsHCL := "[\n" + strings.Join(cmdListItems, ",\n") + "\n]"
+
+	// Create terraform.tfvars with all variables
+	// Note: start_time_millis starts at year 3000, will be updated after first apply
+	tfvarsTF := fmt.Sprintf(`github_pat            = "%s"
+github_owner          = "%s"
+target_repo_name      = "%s"
+instruction           = "%s"
+instruction_mode      = "%s"
+minutes_between_steps = %d
+start_time_millis     = 32503680000000
+sequence_commands     = %s
+`, d.githubPAT, d.githubOwner, targetRepoName, escapedInstruction, mode, minutesBetween, sequenceCommandsHCL)
 
 	// Write all the files
 	files := map[string]string{
@@ -2057,7 +2507,65 @@ func (d *Dispatcher) pollMonitoringFlow(record *FlowRecord) error {
 		}
 	}
 
+	// Handle sequence-to-new-repo specific monitoring
+	if record.DispatchType == DispatchTypeSequenceToNewRepo {
+		return d.pollSequenceFlow(record)
+	}
+
 	// No actionable state change - keep monitoring
+	d.writeFlowRecord(*record)
+	return nil
+}
+
+// pollSequenceFlow handles sequence-specific monitoring logic
+func (d *Dispatcher) pollSequenceFlow(record *FlowRecord) error {
+	// Check if sequence is complete
+	sequenceComplete, _ := d.getTerraformOutput(record.TFConfigDir, "sequence_complete")
+	if sequenceComplete == "true" {
+		log.Printf("[%s] Flow %s sequence complete - all steps executed", d.dispatcherID, record.FlowID)
+		// Check conclusion state
+		if record.ConclusionState == ConclusionStateMerged {
+			return d.performFlowCleanup(record, "sequence-complete+merged")
+		} else if record.ConclusionState == ConclusionStateClosed {
+			return d.performFlowCleanup(record, "sequence-complete+closed")
+		}
+		// Sequence is complete but PR is still active - keep monitoring for PR merge/close
+	}
+
+	// Log sequence progress
+	stepReadinessJSON, err := d.getTerraformOutput(record.TFConfigDir, "step_readiness")
+	if err == nil && stepReadinessJSON != "" {
+		// Parse the step readiness to count ready steps
+		var stepReadiness map[string]bool
+		if json.Unmarshal([]byte(stepReadinessJSON), &stepReadiness) == nil {
+			readyCount := 0
+			for _, ready := range stepReadiness {
+				if ready {
+					readyCount++
+				}
+			}
+			if record.SequenceTotalSteps > 0 {
+				log.Printf("[%s] Flow %s sequence progress: %d/%d steps ready", d.dispatcherID, record.FlowID, readyCount, record.SequenceTotalSteps)
+				record.SequenceLastCompletedIdx = readyCount
+			}
+		}
+	}
+
+	// Check elapsed time and next step timing
+	elapsedStr, _ := d.getTerraformOutput(record.TFConfigDir, "elapsed_millis")
+	if elapsedStr != "" {
+		var elapsedMillis int64
+		fmt.Sscanf(elapsedStr, "%d", &elapsedMillis)
+		elapsedMinutes := elapsedMillis / 60000
+		nextStepMinutes := int64((record.SequenceLastCompletedIdx + 1) * record.SequenceMinutesBetween)
+		if record.SequenceLastCompletedIdx < record.SequenceTotalSteps {
+			minutesUntilNext := nextStepMinutes - elapsedMinutes
+			if minutesUntilNext > 0 {
+				log.Printf("[%s] Flow %s next step in ~%d minutes", d.dispatcherID, record.FlowID, minutesUntilNext)
+			}
+		}
+	}
+
 	d.writeFlowRecord(*record)
 	return nil
 }
@@ -2088,6 +2596,19 @@ func (d *Dispatcher) handleFlowMerged(record *FlowRecord) error {
 	// For approval dispatch, create INSTRUCTION.json to execute the pending instruction
 	if record.DispatchType == DispatchTypeApproval {
 		return d.handleApprovalMerged(record)
+	}
+
+	// For sequence-to-new-repo, check if sequence is complete before cleanup
+	if record.DispatchType == DispatchTypeSequenceToNewRepo {
+		sequenceComplete, _ := d.getTerraformOutput(record.TFConfigDir, "sequence_complete")
+		if sequenceComplete == "true" {
+			log.Printf("[%s] Flow %s sequence completed and PR merged - performing cleanup", d.dispatcherID, record.FlowID)
+			return d.performFlowCleanup(record, "sequence-complete+merged")
+		}
+		// Sequence not complete - keep monitoring (unusual case where PR is merged early)
+		log.Printf("[%s] Flow %s PR merged but sequence not complete - keeping flow active", d.dispatcherID, record.FlowID)
+		d.writeFlowRecord(*record)
+		return nil
 	}
 
 	// For repo-isolation, we need to wait for the reintegration PR to be merged/closed

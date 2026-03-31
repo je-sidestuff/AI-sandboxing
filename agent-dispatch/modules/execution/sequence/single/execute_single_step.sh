@@ -1,0 +1,117 @@
+#!/bin/bash
+
+# Description: This script executes a single AI execution step.
+#              It clones the repo at the HEAD of the working branch, dispatches an AI work unit
+#              with the instruction, waits for completion, and pushes results back
+#              to the same branch.
+#
+# Required environment variables:
+#   EXECUTION_ID         - Unique ID for this execution step
+#   BRANCH_NAME          - The working branch to clone and push to
+#   SOURCE_REPO_URL      - The authenticated HTTPS URL of the source repository
+#   SLOPSPACES_WORK_DIR  - The SLOPSPACES working directory (e.g., /workspaces/slopspaces/working/)
+#   DISPATCHER_NAME      - The name of the dispatcher (used for directory naming)
+#   UNIX_TIMESTAMP       - Unix seconds timestamp for unique directory naming
+#   INSTRUCTION          - The instruction to pass to the AI agent
+#   INSTRUCTION_MODE     - The instruction mode (execute or other modes)
+
+set -e
+
+echo "========================================"
+echo "Single AI Execution Step"
+echo "========================================"
+echo "Execution ID:   ${EXECUTION_ID}"
+echo "Dispatcher:     ${DISPATCHER_NAME}"
+echo "Branch:         ${BRANCH_NAME}"
+echo "Timestamp:      ${UNIX_TIMESTAMP}"
+echo "Instruction:    ${INSTRUCTION}"
+echo "========================================"
+
+OUTER_DIR="${SLOPSPACES_WORK_DIR}/${EXECUTION_ID}"
+WORKER_DIR="/workspaces/slopspaces/input/any/${EXECUTION_ID}"
+OUTPUT_DIR="/workspaces/slopspaces/output/content/${EXECUTION_ID}"
+
+clean_up_and_report_failure() {
+    local outer="$1"
+    local worker="$2"
+    rm -rf "$outer"
+    rm -rf "$worker"
+    echo "ERROR: $3"
+    exit 1
+}
+
+# Step 1: Create the outer working directory
+echo "Step 1: Creating outer working directory..."
+mkdir -p "${OUTER_DIR}/git_state"
+
+# Step 2: Clone the repo at the HEAD of the working branch
+echo "Step 2: Cloning repository at branch ${BRANCH_NAME}..."
+echo "Sleeping for 5 seconds to allow for any potential push-propagation delays..."
+sleep 5
+git clone --branch "$BRANCH_NAME" --single-branch "$SOURCE_REPO_URL" "$OUTER_DIR/repo" \
+    || clean_up_and_report_failure "$OUTER_DIR" "$WORKER_DIR" "Failed to clone repository at branch ${BRANCH_NAME}"
+
+# Step 3: Verify branch
+echo "Step 3: Verifying branch..."
+cd "$OUTER_DIR/repo" || clean_up_and_report_failure "$OUTER_DIR" "$WORKER_DIR" "Failed to cd into cloned repo"
+CURRENT_BRANCH=$(git branch --show-current)
+if [ "$CURRENT_BRANCH" != "$BRANCH_NAME" ]; then
+    clean_up_and_report_failure "$OUTER_DIR" "$WORKER_DIR" "Expected branch ${BRANCH_NAME} but found ${CURRENT_BRANCH}"
+fi
+echo "Verified on branch: ${BRANCH_NAME}"
+
+# Save branch name for later reference
+echo "$BRANCH_NAME" > "${OUTER_DIR}/branch_name"
+
+# Step 4: Isolate .git state
+echo "Step 4: Isolating git state..."
+mv "$OUTER_DIR/repo/.git" "${OUTER_DIR}/git_state/.git"
+
+# Step 5: Write INSTRUCTION.json with the execution instruction
+echo "Step 5: Writing INSTRUCTION.json..."
+python3 - <<PYEOF
+import json
+instruction = """${INSTRUCTION}"""
+mode = """${INSTRUCTION_MODE}"""
+payload = {"mode": mode, "instruction": instruction}
+with open("${OUTER_DIR}/repo/INSTRUCTION.json", "w") as f:
+    json.dump(payload, f, indent=2)
+PYEOF
+echo "Created: ${OUTER_DIR}/repo/INSTRUCTION.json"
+
+# Step 6: Move repo to slopspaces worker input
+echo "Step 6: Moving repo to worker directory..."
+mkdir -p "$(dirname "$WORKER_DIR")"
+mv "$OUTER_DIR/repo" "$WORKER_DIR"
+echo "Moved to: ${WORKER_DIR}"
+
+# Step 7: Wait for the AI to process the work unit (up to 10 minutes)
+echo "Step 7: Waiting for AI processing (up to 10 minutes)..."
+TIMEOUT=600
+ELAPSED=0
+while [ ! -d "${OUTPUT_DIR}" ]; do
+    sleep 5
+    ELAPSED=$((ELAPSED + 5))
+    if [ $ELAPSED -ge $TIMEOUT ]; then
+        clean_up_and_report_failure "$OUTER_DIR" "$WORKER_DIR" "Timed out waiting for AI to process execution"
+    fi
+done
+echo "Processing complete."
+
+# Step 8: Restore .git and push changes back to the working branch
+echo "Step 8: Restoring git state and pushing to ${BRANCH_NAME}..."
+mv "${OUTER_DIR}/git_state/.git" "${OUTPUT_DIR}/.git"
+cd "${OUTPUT_DIR}" || clean_up_and_report_failure "$OUTER_DIR" "" "Failed to cd into output directory"
+git add --all
+git commit -m "SEQUENCE: AI-applied changes from dispatcher ${DISPATCHER_NAME}"
+git push --set-upstream origin "$BRANCH_NAME"
+echo "Pushed changes to branch: ${BRANCH_NAME}"
+
+# Cleanup
+rm -rf "${OUTER_DIR}"
+echo "Cleaned up outer directory."
+
+echo ""
+echo "========================================"
+echo "Single execution step completed successfully."
+echo "========================================"
