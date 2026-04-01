@@ -775,6 +775,11 @@ func (d *Dispatcher) handleDispatchFiles(folderPath string) (*Dispatch, error) {
 			return nil, fmt.Errorf("invalid dispatch type: %s (must be 'direct', 'in-repo', 'repo-isolation', 'sequence-to-new-repo', or 'approval')", dispatch.Type)
 		}
 
+		// Validate sequence-to-new-repo specific requirements
+		if err := validateSequenceDispatch(&dispatch); err != nil {
+			return nil, err
+		}
+
 		// Default mode to execute
 		if dispatch.Mode == "" {
 			dispatch.Mode = "execute"
@@ -819,6 +824,41 @@ func (d *Dispatcher) handleDispatchFiles(folderPath string) (*Dispatch, error) {
 	}
 
 	return nil, fmt.Errorf("no dispatch file found")
+}
+
+// validateSequenceDispatch validates sequence-to-new-repo specific requirements.
+// Returns nil if dispatch is not sequence-to-new-repo type or if validation passes.
+func validateSequenceDispatch(dispatch *Dispatch) error {
+	if dispatch.Type != DispatchTypeSequenceToNewRepo {
+		return nil // Not a sequence, nothing to validate
+	}
+
+	// Must have at least one command
+	if len(dispatch.SequenceCommands) == 0 {
+		return fmt.Errorf("sequence-to-new-repo requires at least one command in sequence_commands")
+	}
+
+	// Cap at 100 steps
+	if len(dispatch.SequenceCommands) > 100 {
+		return fmt.Errorf("sequence-to-new-repo limited to 100 steps, got %d", len(dispatch.SequenceCommands))
+	}
+
+	// Validate no empty commands
+	for i, cmd := range dispatch.SequenceCommands {
+		if strings.TrimSpace(cmd) == "" {
+			return fmt.Errorf("sequence_commands[%d] is empty", i)
+		}
+	}
+
+	// Ensure minutes_between is reasonable (apply default if <= 0)
+	if dispatch.SequenceMinutesBetween <= 0 {
+		dispatch.SequenceMinutesBetween = 20 // Default
+	}
+	if dispatch.SequenceMinutesBetween > 1440 { // 24 hours max
+		return fmt.Errorf("sequence_minutes_between must be <= 1440 (24 hours), got %d", dispatch.SequenceMinutesBetween)
+	}
+
+	return nil
 }
 
 // processDispatchUnit handles a single dispatch work unit

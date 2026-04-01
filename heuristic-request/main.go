@@ -17,7 +17,7 @@ import (
 // Default paths
 const (
 	defaultHeuristicDir = "/workspaces/slopspaces/heuristic"
-	defaultRequestDir   = "/workspaces/slopspaces/input/any"  // Output to agent-dispatch input dir
+	defaultRequestDir   = "/workspaces/slopspaces/input/any" // Output to agent-dispatch input dir
 	defaultRecordsDir   = "/workspaces/slopspaces/agent-records/"
 	checkInterval       = 10 * time.Second
 	defaultAgent        = "claude"
@@ -268,6 +268,35 @@ For simple local tasks that don't modify external repos. Use when:
 }
 %s
 
+### sequence-to-new-repo
+For multi-step tasks that should be executed as a series of timed steps in a NEW repository. Creates a fresh repo and executes steps sequentially with configurable delays between them. Use when:
+- Writing multi-chapter documentation or tutorials
+- Implementing features in phases
+- Tasks that naturally decompose into ordered steps
+- Creating content that builds on previous steps
+
+%sjson DISPATCH.json
+{
+  "type": "sequence-to-new-repo",
+  "instruction": "Initial setup instruction (creates repo structure)",
+  "sequence_commands": [
+    "Step 1: First action to perform",
+    "Step 2: Second action (builds on step 1)",
+    "Step 3: Third action (builds on previous steps)"
+  ],
+  "sequence_minutes_between": 20,
+  "mode": "execute"
+}
+%s
+
+**Guidelines for sequence-to-new-repo:**
+- Use when the request mentions: "chapters", "phases", "series", "step-by-step", "tutorial", "guide", "multi-part", "staged"
+- First instruction creates the repo structure (README, folder layout)
+- Each sequence_command is a discrete, self-contained step
+- Steps should be logically ordered - later steps may reference earlier work
+- 20 minutes between steps is the default; adjust based on complexity (5-60 minutes typical)
+- Keep steps focused: 3-10 steps is typical, max 80
+
 ## Alternate Output: INSTRUCTION
 
 If the task is a very simple instruction that doesn't need dispatch orchestration:
@@ -284,12 +313,15 @@ If the task is a very simple instruction that doesn't need dispatch orchestratio
 - **repo-isolation**: Default choice for modifying repos. Phrases like "add a feature to X", "implement Y in Z repo"
 - **in-repo**: Use for quick fixes where isolation overhead isn't warranted
 - **direct**: Use for local tasks, reports, analysis that don't modify external repos
+- **sequence-to-new-repo**: Use for multi-part content creation (tutorials, documentation, phased implementations)
 - **INSTRUCTION**: Use for very simple prompts that don't need any orchestration
 - Infer repo owner when not specified: "agent-events" → "je-sidestuff/agent-events"
 - All dispatches go through approval automatically - you don't need to specify approval
 
+**Sequence detection keywords:** chapters, phases, series, step-by-step, tutorial, guide, multi-part, staged, phased
+
 Output exactly ONE file wrapped in triple backticks with the filename.
-`, heuristicContent, "```", "```", "```", "```", "```", "```", "```", "```")
+`, heuristicContent, "```", "```", "```", "```", "```", "```", "```", "```", "```", "```")
 }
 
 // extractFilesFromOutput parses the agent output to extract files from code blocks
@@ -638,4 +670,3 @@ func main() {
 	_ = *watchFlag
 	watcher.run()
 }
-
