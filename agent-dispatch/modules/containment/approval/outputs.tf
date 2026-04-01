@@ -74,3 +74,23 @@ output "pending_agent" {
   description = "The agent override for executing the pending instruction (may be empty)"
   value       = var.pending_agent
 }
+
+# ---------------------------------------------------------------------------------------------------------------------
+# SEQUENCE OUTPUTS
+# These outputs are used for sequence-to-new-repo dispatches.
+# ---------------------------------------------------------------------------------------------------------------------
+
+output "sequence_commands" {
+  description = "The list of sequence commands to execute (empty if not a sequence dispatch)"
+  value       = var.sequence_commands
+}
+
+output "sequence_minutes_between" {
+  description = "Minutes between sequence steps (default 20)"
+  value       = var.sequence_minutes_between
+}
+
+output "is_sequence" {
+  description = "Whether this is a sequence dispatch (has sequence_commands)"
+  value       = local.is_sequence
+}

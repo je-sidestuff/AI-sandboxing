@@ -104,61 +104,270 @@ Support **proposed sequences** where:
 
 This is an evolutionary step - we enhance the approval experience without changing execution.
 
+### Backward Compatibility Strategy
+
+The existing `sequence-to-new-repo` flow works today with `skip_approval: true`. Our changes must:
+1. **NOT break existing flows** - all current variables remain optional or have defaults
+2. **Be additive only** - new variables are optional; existing dispatches without them work unchanged
+3. **Preserve data through the cycle** - approval → merge → re-dispatch must not lose sequence parameters
+
 ### Changes Required
 
-#### 1. Enhanced Approval PR Content
+#### 1. Approval Module Variables (`variables.tf`)
 
-Current approval PRs show the pending instruction and basic metadata. We need to:
+Add two new **optional** variables with defaults that maintain backward compatibility:
 
-**a) Create a human-readable sequence plan in the approval PR:**
-```markdown
-## Proposed Sequence
+```hcl
+variable "sequence_commands" {
+  description = "For sequence-to-new-repo: list of commands to execute in sequence"
+  type        = list(string)
+  default     = []  # Empty list = not a sequence dispatch
+}
 
-**Initial Setup:** Create project scaffold with README.md
-
-**Execution Steps:**
-1. (T+0m) Write chapter 1 of documentation in docs/CHAPTER1.md
-2. (T+20m) Write chapter 2 of documentation in docs/CHAPTER2.md
-3. (T+40m) Write chapter 3 of documentation in docs/CHAPTER3.md
-
-**Total Duration:** ~60 minutes (3 steps @ 20 min intervals)
-
-**Approval Action:**
-- Merge this PR to approve and begin execution
-- Close this PR to reject the sequence
+variable "sequence_minutes_between" {
+  description = "For sequence-to-new-repo: minutes between steps"
+  type        = number
+  default     = 20  # Sensible default
+}
 ```
 
-**b) Include structured data for re-dispatch:**
-The approval JSON already contains `pending_instruction`, but we need to ensure `sequence_commands` and `sequence_minutes_between` are preserved and re-emitted on approval.
+**Why this is safe:** Existing callers don't pass these, so they get empty list / default. No breaking changes.
 
-#### 2. Approval Module Updates
+#### 2. Approval Module Locals (`main.tf`)
 
-File: `/agent-dispatch/modules/containment/approval/`
+Add computed locals to detect if this is a sequence dispatch and build the display content:
 
-- Add `sequence_commands` and `sequence_minutes_between` to the approval request JSON
-- Generate the human-readable sequence plan in PR body
-- Ensure re-dispatch includes all sequence parameters
+```hcl
+locals {
+  # ... existing locals ...
 
-#### 3. Dispatcher Updates
+  # Detect if this is a sequence dispatch (has commands)
+  is_sequence = length(var.sequence_commands) > 0
 
-File: `/agent-dispatch/main.go`
+  # Pre-compute sequence metadata for display
+  sequence_total_steps = length(var.sequence_commands)
+  sequence_total_duration_mins = local.sequence_total_steps * var.sequence_minutes_between
 
-- When creating approval-gated dispatch for sequence-to-new-repo:
-  - Pass through all sequence parameters
-  - Format the approval PR body with the sequence plan
-- When processing approved dispatch (from PR merge):
-  - Extract and use preserved sequence parameters
+  # Build the numbered step list for PR body
+  # Format: "1. (T+0m) First command\n2. (T+20m) Second command\n..."
+  sequence_step_list = join("\n", [
+    for i, cmd in var.sequence_commands :
+    "${i + 1}. (T+${i * var.sequence_minutes_between}m) ${cmd}"
+  ])
+}
+```
 
-#### 4. Testing the Flow
+#### 3. Approval File Content (JSON in the request file)
 
-Create test cases:
-1. Dispatch sequence-to-new-repo with approval required
-2. Verify approval PR contains readable sequence plan
-3. Merge approval PR
-4. Verify re-dispatch includes all sequence commands
-5. Verify sequence executes correctly
+Extend `approval_file_content` to include sequence data **conditionally**:
 
-### Optional Enhancements
+```hcl
+locals {
+  # Base approval data (always included)
+  _approval_base = {
+    type                = "approval-request"
+    dispatcher_name     = var.dispatcher_name
+    source_context      = var.source_context
+    pending_instruction = var.pending_instruction
+    pending_mode        = var.pending_mode
+    pending_agent       = var.pending_agent
+    request_time        = time_static.dispatch_time.rfc3339
+    metadata            = jsondecode(var.metadata_json)
+  }
+
+  # Sequence-specific data (only included when is_sequence = true)
+  _approval_sequence = local.is_sequence ? {
+    sequence_commands        = var.sequence_commands
+    sequence_minutes_between = var.sequence_minutes_between
+  } : {}
+
+  # Merged result
+  approval_file_content = jsonencode(merge(local._approval_base, local._approval_sequence))
+}
+```
+
+**Why separate locals:** Terraform's ternary operator struggles with complex inline expressions (especially heredocs). Breaking into separate locals avoids parser ambiguity.
+
+#### 4. PR Body Content
+
+##### ⚠️ CRITICAL PITFALL: Terraform Heredoc + Ternary
+
+**DO NOT** write code like this:
+```hcl
+# BAD - Terraform parser cannot handle heredoc as ternary branch
+sequence_plan = local.is_sequence ? <<-EOT
+  some content
+EOT : ""
+```
+
+The Terraform parser sees the first `:` in the heredoc content and thinks it's the ternary separator, causing "Missing false expression in conditional" errors.
+
+**SOLUTION:** Pre-compute content in separate locals, then use simple string interpolation:
+
+```hcl
+locals {
+  # Pre-compute the sequence plan as a separate local (no ternary)
+  _sequence_plan_content = <<-EOT
+### Proposed Sequence
+
+**Execution Steps:**
+${local.sequence_step_list}
+
+**Timing:** ${var.sequence_minutes_between} minutes between steps
+**Total Duration:** ~${local.sequence_total_duration_mins} minutes (${local.sequence_total_steps} steps)
+EOT
+
+  # Now use simple ternary with pre-computed strings
+  sequence_plan_markdown = local.is_sequence ? local._sequence_plan_content : ""
+}
+```
+
+##### PR Body Template
+
+```hcl
+resource "github_repository_pull_request" "approval_pr" {
+  title = "Approval: ${var.dispatcher_name} (${local.unix_timestamp})"
+  body  = <<-EOT
+## Approval Request
+
+**Source:** ${var.source_context}
+**Dispatcher:** ${var.dispatcher_name}
+**Requested at:** ${time_static.dispatch_time.rfc3339}
+
+### ${local.is_sequence ? "Initial Setup" : "Pending Instruction"}
+
+```
+${var.pending_instruction}
+```
+
+${local.sequence_plan_markdown}
+
+### Details
+
+- **Mode:** ${var.pending_mode}
+${var.pending_agent != "" ? "- **Agent:** ${var.pending_agent}" : ""}
+
+---
+
+**Merge this PR to approve and ${local.is_sequence ? "begin sequence execution" : "execute the instruction"}.**
+**Close this PR to reject the request.**
+EOT
+  # ... other fields
+}
+```
+
+#### 5. Dispatcher Updates (`main.go`)
+
+##### 5a. Pass sequence parameters when creating approval terraform config
+
+In `createApprovalTerraformConfig()`, add the sequence parameters to the generated HCL:
+
+```go
+// In the function that generates approval terraform config
+if len(dispatch.SequenceCommands) > 0 {
+    // Build HCL list literal for sequence_commands
+    cmdItems := make([]string, len(dispatch.SequenceCommands))
+    for i, cmd := range dispatch.SequenceCommands {
+        cmdItems[i] = fmt.Sprintf("  %q", cmd)
+    }
+    sequenceCommandsHCL := "[\n" + strings.Join(cmdItems, ",\n") + "\n]"
+
+    tfConfig += fmt.Sprintf(`
+sequence_commands        = %s
+sequence_minutes_between = %d
+`, sequenceCommandsHCL, dispatch.SequenceMinutesBetween)
+}
+```
+
+##### 5b. Extract sequence parameters from approved dispatch
+
+When processing a merged approval PR, the dispatcher reads the approval JSON file. Ensure sequence parameters are extracted:
+
+```go
+// In processApprovedDispatch or similar
+type ApprovalRequest struct {
+    Type                    string   `json:"type"`
+    DispatcherName          string   `json:"dispatcher_name"`
+    PendingInstruction      string   `json:"pending_instruction"`
+    PendingMode             string   `json:"pending_mode"`
+    PendingAgent            string   `json:"pending_agent"`
+    SequenceCommands        []string `json:"sequence_commands,omitempty"`
+    SequenceMinutesBetween  int      `json:"sequence_minutes_between,omitempty"`
+    // ... other fields
+}
+
+// When re-dispatching:
+newDispatch := DispatchRequest{
+    Type:                   inferTypeFromContext(), // or stored in approval
+    Instruction:            approval.PendingInstruction,
+    Mode:                   approval.PendingMode,
+    SequenceCommands:       approval.SequenceCommands,
+    SequenceMinutesBetween: approval.SequenceMinutesBetween,
+    SkipApproval:           true, // Already approved
+}
+```
+
+#### 6. Testing the Flow
+
+**Manual Test Procedure:**
+
+1. Create a DISPATCH.json with sequence-to-new-repo and `skip_approval: false`:
+   ```json
+   {
+     "type": "sequence-to-new-repo",
+     "instruction": "Create tutorial project structure",
+     "sequence_commands": [
+       "Write chapter 1 in docs/ch1.md",
+       "Write chapter 2 in docs/ch2.md"
+     ],
+     "sequence_minutes_between": 5,
+     "skip_approval": false
+   }
+   ```
+
+2. Place in `slopspaces/input/any/<folder>/`
+
+3. Verify approval PR is created with:
+   - "Initial Setup" header (not "Pending Instruction")
+   - Numbered step list with timing
+   - Total duration displayed
+   - Merge button text says "begin sequence execution"
+
+4. Check the approval JSON file in the PR contains:
+   - `sequence_commands` array
+   - `sequence_minutes_between` value
+
+5. Merge the approval PR
+
+6. Verify re-dispatch occurs with:
+   - All sequence commands preserved
+   - `skip_approval: true` set
+
+7. Verify sequence executes correctly with time-based steps
+
+**Automated Test Cases (future):**
+
+- `TestApprovalPRBodyContainsSequencePlan`
+- `TestApprovalJSONPreservesSequenceCommands`
+- `TestApprovedDispatchReDispatchesWithSequence`
+- `TestNonSequenceDispatchUnchanged` (backward compatibility)
+
+### Summary of Files to Modify
+
+| File | Changes |
+|------|---------|
+| `modules/containment/approval/variables.tf` | Add `sequence_commands` (list), `sequence_minutes_between` (number) with defaults |
+| `modules/containment/approval/main.tf` | Add locals for is_sequence detection, step list formatting, PR body generation |
+| `agent-dispatch/main.go` | Pass sequence params to approval TF config; extract from approved dispatch |
+
+### Known Pitfalls to Avoid
+
+1. **Heredoc in ternary**: Never put heredoc directly in ternary branches - use separate locals
+2. **Count depends on unknown**: Don't use `count = length(something_from_apply)` - use data source queries with a-priori known values
+3. **Missing defaults**: Always provide defaults for new variables to maintain backward compatibility
+4. **JSON encoding edge cases**: Use `jsonencode()` for complex structures, not string interpolation
+
+### Optional Enhancements (Deferred)
 
 **A. Step-Level Comments in Approval PR**
 Allow reviewers to add comments on individual steps that get passed to the agent when that step executes:
@@ -184,166 +393,296 @@ More complex - allow reviewers to modify the sequence before approval. This requ
 
 Enable the **heuristic-request** stage to automatically construct and dispatch sequence proposals. This closes the loop from user intent to automated multi-step execution.
 
-### The Heuristic-Request Stage
+### Current State of Heuristic-Request
 
-The heuristic-request stage receives high-level user requests and must:
-1. Understand the intent
-2. Determine if a sequence is appropriate
-3. Construct the sequence of steps
-4. Create the dispatch with approval required
+The heuristic-request watcher (`heuristic-request/main.go`) currently:
+- Watches `HEURISTIC_DIR/pending/` for folders containing `HEURISTIC.md`
+- Invokes an AI agent in **prompt-only mode** (`-p` flag)
+- Extracts `DISPATCH.json` or `INSTRUCTION.json` from the agent's output
+- Places the extracted file in `REQUEST_DIR` for agent-dispatch to pick up
+
+**Key Insight:** The prompt template (`buildHeuristicPrompt()`) currently documents these dispatch types:
+- `repo-isolation`
+- `in-repo`
+- `direct`
+- `INSTRUCTION.json` (simple prompts)
+
+**Missing:** The `sequence-to-new-repo` type is NOT in the prompt. The AI agent doesn't know it exists.
 
 ### Changes Required
 
-#### 1. Sequence Planning Capability
+#### 1. Update Heuristic Prompt Template
 
-Heuristic-request needs logic to break down requests into sequences:
+File: `heuristic-request/main.go`, function `buildHeuristicPrompt()`
 
-**Input:** "Write a comprehensive tutorial on building REST APIs"
+Add the `sequence-to-new-repo` type documentation:
 
-**Output:**
-```json
+```go
+func (w *HeuristicWatcher) buildHeuristicPrompt(heuristicContent string) string {
+    return fmt.Sprintf(`You are a heuristic processor...
+
+## Dispatch Types (Execution Patterns)
+
+### repo-isolation
+... existing ...
+
+### in-repo
+... existing ...
+
+### direct
+... existing ...
+
+### sequence-to-new-repo
+For multi-step tasks that should be executed as a series of timed steps in a NEW repository.
+Creates a fresh repo and executes steps sequentially with configurable delays between them.
+Use when:
+- Writing multi-chapter documentation or tutorials
+- Implementing features in phases
+- Tasks that naturally decompose into ordered steps
+- Creating content that builds on previous steps
+
+%sjson DISPATCH.json
 {
   "type": "sequence-to-new-repo",
-  "instruction": "Create tutorial repository structure with outline",
+  "instruction": "Initial setup instruction (creates repo structure)",
   "sequence_commands": [
-    "Write introduction and setup guide in docs/01-introduction.md",
-    "Write endpoint design section in docs/02-endpoints.md",
-    "Write authentication section in docs/03-auth.md",
-    "Write testing section in docs/04-testing.md",
-    "Write deployment section in docs/05-deployment.md"
+    "Step 1: First action to perform",
+    "Step 2: Second action (builds on step 1)",
+    "Step 3: Third action (builds on previous steps)"
   ],
-  "sequence_minutes_between": 25,
-  "skip_approval": false
+  "sequence_minutes_between": 20,
+  "mode": "execute"
+}
+%s
+
+**Guidelines for sequence-to-new-repo:**
+- Use when the request mentions: "chapters", "phases", "series", "step-by-step", "tutorial", "guide"
+- First instruction creates the repo structure (README, folder layout)
+- Each sequence_command is a discrete, self-contained step
+- Steps should be logically ordered - later steps may reference earlier work
+- 20 minutes between steps is the default; adjust based on complexity
+- Keep steps focused: 3-10 steps is typical, max 20
+
+... rest of existing prompt ...
+`, "` + "`" + "`" + "`", "` + "`" + "`")
 }
 ```
 
-#### 2. Heuristic Triggers
+#### 2. Update Guidelines Section
 
-Define when heuristic-request should propose a sequence vs. a single dispatch:
+Add explicit guidance for choosing `sequence-to-new-repo`:
 
-**Sequence Indicators:**
+```go
+## Guidelines
+
+- **repo-isolation**: Default choice for modifying existing repos
+- **in-repo**: Use for quick fixes where isolation overhead isn't warranted
+- **direct**: Use for local tasks, reports, analysis that don't modify external repos
+- **sequence-to-new-repo**: Use for multi-part content creation (tutorials, documentation, phased implementations)
+- **INSTRUCTION**: Use for very simple prompts that don't need any orchestration
+- Infer repo owner when not specified: "agent-events" → "je-sidestuff/agent-events"
+- All dispatches go through approval automatically - you don't need to specify approval
+
+**Sequence detection keywords:** chapters, phases, series, step-by-step, tutorial, guide, multi-part, staged
+```
+
+#### 3. Validation in agent-dispatch
+
+File: `agent-dispatch/main.go`
+
+Add validation when processing `sequence-to-new-repo` dispatches:
+
+```go
+func (d *Dispatcher) validateSequenceDispatch(dispatch *DispatchRequest) error {
+    if dispatch.Type != DispatchTypeSequenceToNewRepo {
+        return nil // Not a sequence, nothing to validate
+    }
+
+    // Must have at least one command
+    if len(dispatch.SequenceCommands) == 0 {
+        return fmt.Errorf("sequence-to-new-repo requires at least one command in sequence_commands")
+    }
+
+    // Cap at 100 steps (already in code, verify)
+    if len(dispatch.SequenceCommands) > 100 {
+        return fmt.Errorf("sequence-to-new-repo limited to 100 steps, got %d", len(dispatch.SequenceCommands))
+    }
+
+    // Validate no empty commands
+    for i, cmd := range dispatch.SequenceCommands {
+        if strings.TrimSpace(cmd) == "" {
+            return fmt.Errorf("sequence_commands[%d] is empty", i)
+        }
+    }
+
+    // Ensure minutes_between is reasonable
+    if dispatch.SequenceMinutesBetween <= 0 {
+        dispatch.SequenceMinutesBetween = 20 // Default
+    }
+    if dispatch.SequenceMinutesBetween > 1440 { // 24 hours max
+        return fmt.Errorf("sequence_minutes_between must be <= 1440 (24 hours), got %d", dispatch.SequenceMinutesBetween)
+    }
+
+    return nil
+}
+```
+
+### Heuristic Triggers (AI Prompt Guidance)
+
+The AI agent itself decides when to use `sequence-to-new-repo` based on the prompt guidance. Key triggers:
+
+**Sequence Indicators (include in prompt):**
 - Request mentions "multi-part", "series", "chapters", "phases"
 - Task is naturally decomposable (tutorial, documentation, refactoring)
-- Estimated scope exceeds single-session capacity
 - Request explicitly asks for staged/phased approach
+- Keywords: "step-by-step", "tutorial", "guide", "documentation"
 
-**Single Dispatch Indicators:**
-- Clearly bounded task
-- Simple bug fix or feature
-- User wants immediate execution
+**Single Dispatch Indicators (also include):**
+- Clearly bounded task ("fix this bug", "add this button")
+- Simple feature addition
+- Modification to existing repo (use `repo-isolation` instead)
 
-#### 3. Step Decomposition Strategy
+### Step Decomposition Strategy
 
-How should heuristic-request break down tasks?
+The AI agent does the decomposition based on the heuristic content. This is **Option B: AI-Driven** from the original plan.
 
-**Option A: Template-Based**
-Predefined templates for common request types:
-- Tutorial: intro → concepts → examples → advanced → conclusion
-- Refactoring: analyze → plan → execute-phase-1 → execute-phase-2 → verify
-- Documentation: overview → API-ref → guides → examples
+**Guardrails via prompt guidance:**
+- Suggest 3-10 steps as typical range
+- Each step should be self-contained
+- Steps should build logically on previous work
+- First step creates structure, later steps add content
 
-**Option B: AI-Driven**
-Use an AI agent to analyze the request and generate steps:
-- More flexible but less predictable
-- May produce inconsistent step granularity
-- Requires validation/guardrails
+**Guardrails via validation (agent-dispatch):**
+- Min 1 step (already enforced)
+- Max 100 steps (already enforced)
+- No empty steps
+- Reasonable timing (1-1440 minutes)
 
-**Option C: Hybrid**
-Templates provide structure, AI fills in specifics:
-- Template: "For documentation, use: overview → details → examples"
-- AI: Determines what "details" means for this specific request
+### Testing the Flow
 
-#### 4. Quality Guardrails
+**Manual Test - Heuristic to Sequence:**
 
-Ensure generated sequences are well-formed:
+1. Create `HEURISTIC.md`:
+   ```markdown
+   # Tutorial Request
 
-**Validation Rules:**
-- Minimum 2 steps, maximum 20 steps
-- Each step has clear, actionable instruction
-- Steps have logical dependency ordering
-- Total estimated time is reasonable
-- No duplicate or redundant steps
+   Write a comprehensive guide on building CLI applications in Go.
 
-**Human Review:**
-- All auto-generated sequences require approval by default
-- Approval PR shows sequence was auto-generated
-- Reviewer can modify before approving
+   The guide should have chapters covering:
+   1. Introduction and project setup
+   2. Argument parsing with cobra
+   3. Configuration management
+   4. Interactive prompts and user input
+   5. Testing CLI commands
 
-#### 5. Feedback Loop
+   This should be structured for step-by-step learning.
+   ```
 
-Learn from approval outcomes:
+2. Place in `slopspaces/heuristic/pending/cli-tutorial/HEURISTIC.md`
 
-**Track:**
-- Which auto-generated sequences get approved vs. rejected
-- Common modifications reviewers make
-- Step execution success rates
+3. Wait for heuristic-request to process
 
-**Improve:**
-- Adjust heuristics based on approval rates
-- Refine step decomposition strategies
-- Update templates based on patterns
+4. Verify output in `slopspaces/input/any/<generated-id>/DISPATCH.json`:
+   - Should have `type: "sequence-to-new-repo"`
+   - Should have `sequence_commands` array with ~5 steps
+   - Should have `sequence_minutes_between` set
 
-### Integration Points
+5. Verify agent-dispatch creates approval PR with sequence plan visible
+
+**Test Cases:**
+
+| Input HEURISTIC.md | Expected Dispatch Type |
+|--------------------|----------------------|
+| "Add email handling to agent-events" | `repo-isolation` |
+| "Write a 5-chapter tutorial on React" | `sequence-to-new-repo` |
+| "Fix typo in README" | `direct` or `in-repo` |
+| "Create a phased migration plan for database" | `sequence-to-new-repo` |
+| "Generate a report on code coverage" | `direct` |
+
+### Integration Flow
 
 ```
-User Request
-     ↓
-[Heuristic-Request Stage]
-     ↓
-Analyze request type and scope
-     ↓
-Is sequence appropriate?
-     ├─ NO → Single dispatch
-     └─ YES ↓
-          Generate sequence steps
-               ↓
-          Construct dispatch JSON
-               ↓
-          Write DISPATCH.json to input directory
-               ↓
-[Existing Flow Takes Over]
-     ↓
-Approval PR created
-     ↓
-Human reviews auto-generated sequence
-     ↓
-Approve/Reject/Modify
-     ↓
-Execute or terminate
+HEURISTIC.md dropped in pending/
+           ↓
+[heuristic-request watcher]
+           ↓
+Invoke AI agent with updated prompt
+(prompt now includes sequence-to-new-repo docs)
+           ↓
+AI analyzes and outputs DISPATCH.json
+           ↓
+Extract to slopspaces/input/any/
+           ↓
+[agent-dispatch watcher]
+           ↓
+Validate dispatch (including sequence validation)
+           ↓
+Route to approval (skip_approval defaults to false)
+           ↓
+[approval module] ← TOMORROW's changes make this show sequence plan
+           ↓
+Human reviews sequence in PR
+           ↓
+Merge → re-dispatch with skip_approval=true
+           ↓
+[sequence-to-new-repo handler]
+           ↓
+Create repo, execute steps with timing
 ```
 
-### Testing Strategy
+### Summary of Files to Modify
 
-1. **Unit Tests:** Step decomposition logic, validation rules
-2. **Integration Tests:** End-to-end from request to approval PR
-3. **Acceptance Tests:** Real requests produce sensible sequences
-4. **A/B Testing:** Compare approval rates of different decomposition strategies
+| File | Changes |
+|------|---------|
+| `heuristic-request/main.go` | Add `sequence-to-new-repo` to prompt template, add keyword guidance |
+| `agent-dispatch/main.go` | Add/verify sequence validation in dispatch processing |
 
 ### Rollout Plan
 
-**Phase 1: Opt-In**
-- Add flag to enable auto-sequence generation
-- Default off, users explicitly request sequences
-- Gather feedback and metrics
+**Phase 1: Prompt Update Only**
+- Update `buildHeuristicPrompt()` to include `sequence-to-new-repo`
+- Let AI naturally choose when appropriate
+- Monitor what it generates
 
-**Phase 2: Suggested**
-- Heuristic-request suggests sequences when appropriate
-- User confirms before dispatch
-- Refine based on suggestions accepted/rejected
+**Phase 2: Tuning**
+- Adjust prompt guidance based on observed outputs
+- Add more specific keyword triggers if AI misses obvious cases
+- Refine step count guidance if AI over/under-decomposes
 
-**Phase 3: Automatic**
-- Auto-generate sequences for appropriate requests
-- Still requires human approval before execution
-- Full feedback loop operational
+**Phase 3: Feedback**
+- Track approval rates of auto-generated sequences
+- Identify patterns in rejected/modified sequences
+- Update prompt based on learnings
 
 ---
 
 ## Summary
 
-| Phase | Focus | Key Deliverable |
-|-------|-------|-----------------|
-| TODAY | Foundation | Working sequence-to-new-repo with approval |
-| TOMORROW | Enhanced Proposals | Human-readable sequence plans in approval PRs |
-| THE NEXT DAY | Automation | Heuristic-driven sequence generation |
+| Phase | Focus | Key Deliverable | Files Modified |
+|-------|-------|-----------------|----------------|
+| TODAY | Foundation | Working sequence-to-new-repo with approval | (existing) |
+| TOMORROW | Enhanced Proposals | Human-readable sequence plans in approval PRs | `approval/variables.tf`, `approval/main.tf`, `main.go` |
+| THE NEXT DAY | Automation | Heuristic-driven sequence generation | `heuristic-request/main.go`, `main.go` (validation) |
+
+### Implementation Order
+
+1. **TOMORROW first** - Makes sequences visible in approval PRs
+   - Required for human review of auto-generated sequences
+   - Backward compatible (new variables have defaults)
+   - Low risk - only affects PR display and JSON storage
+
+2. **THE NEXT DAY second** - Enables AI to propose sequences
+   - Depends on TOMORROW for human review experience
+   - Prompt change only in heuristic-request
+   - Validation already mostly exists in agent-dispatch
+
+### Key Pitfalls Documented
+
+| Pitfall | Where | Solution |
+|---------|-------|----------|
+| Heredoc in ternary | Terraform locals | Pre-compute in separate local, then simple ternary |
+| Count depends on unknown | Module resources | Use data sources with a-priori known query values |
+| Missing backward compat | New variables | Always provide defaults for new optional vars |
+| AI not knowing about type | Heuristic prompt | Add `sequence-to-new-repo` docs to `buildHeuristicPrompt()` |
 
 The path forward builds incrementally: first we make sequences easy to review (TOMORROW), then we automate their creation (THE NEXT DAY). Each phase adds value independently while moving toward full automation.

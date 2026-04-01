@@ -953,7 +953,7 @@ func (d *Dispatcher) processInRepoDispatch(unit DispatchUnit) error {
 
 	// Run terraform init
 	log.Printf("[%s] Running terraform init in %s", d.dispatcherID, tfConfigDir)
-	if err := d.runTerraform(tfConfigDir, "init"); err != nil {
+	if err := d.runTerraform(tfConfigDir, "init", "-upgrade"); err != nil {
 		flowRecord.Status = "failed"
 		flowRecord.Error = fmt.Sprintf("terraform init failed: %v", err)
 		flowRecord.EndTime = time.Now().Format(time.RFC3339)
@@ -1049,7 +1049,7 @@ func (d *Dispatcher) processRepoIsolationDispatch(unit DispatchUnit) error {
 
 	// Run terraform init
 	log.Printf("[%s] Running terraform init in %s", d.dispatcherID, tfConfigDir)
-	if err := d.runTerraform(tfConfigDir, "init"); err != nil {
+	if err := d.runTerraform(tfConfigDir, "init", "-upgrade"); err != nil {
 		flowRecord.Status = "failed"
 		flowRecord.Error = fmt.Sprintf("terraform init failed: %v", err)
 		flowRecord.EndTime = time.Now().Format(time.RFC3339)
@@ -1186,7 +1186,7 @@ func (d *Dispatcher) processSequenceToNewRepoDispatch(unit DispatchUnit) error {
 
 	// Run terraform init
 	log.Printf("[%s] Running terraform init in %s", d.dispatcherID, tfConfigDir)
-	if err := d.runTerraform(tfConfigDir, "init"); err != nil {
+	if err := d.runTerraform(tfConfigDir, "init", "-upgrade"); err != nil {
 		flowRecord.Status = "failed"
 		flowRecord.Error = fmt.Sprintf("terraform init failed: %v", err)
 		flowRecord.EndTime = time.Now().Format(time.RFC3339)
@@ -1377,7 +1377,7 @@ func (d *Dispatcher) createApprovalGatedDispatch(unit DispatchUnit) error {
 
 	// Run terraform init
 	log.Printf("[%s] Running terraform init in %s", d.dispatcherID, tfConfigDir)
-	if err := d.runTerraform(tfConfigDir, "init"); err != nil {
+	if err := d.runTerraform(tfConfigDir, "init", "-upgrade"); err != nil {
 		flowRecord.Status = "failed"
 		flowRecord.Error = fmt.Sprintf("terraform init failed: %v", err)
 		flowRecord.EndTime = time.Now().Format(time.RFC3339)
@@ -1515,7 +1515,7 @@ func (d *Dispatcher) processApprovalDispatch(unit DispatchUnit) error {
 
 	// Run terraform init
 	log.Printf("[%s] Running terraform init in %s", d.dispatcherID, tfConfigDir)
-	if err := d.runTerraform(tfConfigDir, "init"); err != nil {
+	if err := d.runTerraform(tfConfigDir, "init", "-upgrade"); err != nil {
 		flowRecord.Status = "failed"
 		flowRecord.Error = fmt.Sprintf("terraform init failed: %v", err)
 		flowRecord.EndTime = time.Now().Format(time.RFC3339)
@@ -2087,6 +2087,30 @@ variable "github_owner" {
 	escapedMetadata := strings.ReplaceAll(metadataJSON, "\\", "\\\\")
 	escapedMetadata = strings.ReplaceAll(escapedMetadata, "\"", "\\\"")
 
+	// Build sequence parameters for HCL if this is a sequence dispatch
+	sequenceParamsHCL := ""
+	if len(dispatch.SequenceCommands) > 0 {
+		// Build the sequence commands list for HCL
+		var cmdListItems []string
+		for _, cmd := range dispatch.SequenceCommands {
+			escapedCmd := strings.ReplaceAll(cmd, "\\", "\\\\")
+			escapedCmd = strings.ReplaceAll(escapedCmd, "\"", "\\\"")
+			escapedCmd = strings.ReplaceAll(escapedCmd, "\n", "\\n")
+			cmdListItems = append(cmdListItems, fmt.Sprintf("    \"%s\"", escapedCmd))
+		}
+		sequenceCommandsHCL := "[\n" + strings.Join(cmdListItems, ",\n") + "\n  ]"
+
+		// Get minutes between, default to 20 if not set
+		minutesBetween := dispatch.SequenceMinutesBetween
+		if minutesBetween <= 0 {
+			minutesBetween = 20
+		}
+
+		sequenceParamsHCL = fmt.Sprintf(`
+  sequence_commands        = %s
+  sequence_minutes_between = %d`, sequenceCommandsHCL, minutesBetween)
+	}
+
 	// Create main.tf with module reference
 	mainTF := fmt.Sprintf(`module "approval_dispatch" {
   source = "%s"
@@ -2099,9 +2123,9 @@ variable "github_owner" {
   pending_mode        = "%s"
   pending_agent       = "%s"
   source_context      = "%s"
-  metadata_json       = "%s"
+  metadata_json       = "%s"%s
 }
-`, modulePath, flowID, approvalRepoName, escapedInstruction, dispatch.Mode, dispatch.Agent, sourceContext, escapedMetadata)
+`, modulePath, flowID, approvalRepoName, escapedInstruction, dispatch.Mode, dispatch.Agent, sourceContext, escapedMetadata, sequenceParamsHCL)
 
 	// Create outputs.tf
 	outputsTF := `output "pr_url" {

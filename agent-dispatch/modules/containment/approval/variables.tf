@@ -58,3 +58,21 @@ variable "metadata_json" {
   type        = string
   default     = "{}"
 }
+
+# ---------------------------------------------------------------------------------------------------------------------
+# SEQUENCE PARAMETERS
+# Optional parameters for sequence-to-new-repo dispatches. When provided, the approval PR
+# will display the proposed sequence plan for human review.
+# ---------------------------------------------------------------------------------------------------------------------
+
+variable "sequence_commands" {
+  description = "For sequence-to-new-repo: list of commands to execute in sequence."
+  type        = list(string)
+  default     = []
+}
+
+variable "sequence_minutes_between" {
+  description = "For sequence-to-new-repo: minutes between steps."
+  type        = number
+  default     = 20
+}
