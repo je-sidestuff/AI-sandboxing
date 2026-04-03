@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -40,6 +41,13 @@ type HeuristicUnit struct {
 	ID         string
 	Content    string
 	FolderPath string
+	Model      string
+}
+
+// HeuristicData is the format for HEURISTIC.json
+type HeuristicData struct {
+	Message string `json:"message"`
+	Model   string `json:"model"`
 }
 
 // ExtractedFile represents a file extracted from agent output
@@ -190,7 +198,32 @@ func (w *HeuristicWatcher) checkForHeuristicUnits() ([]HeuristicUnit, error) {
 				continue
 			}
 
-			// Check for HEURISTIC.md
+			// Check for HEURISTIC.json first
+			heuristicJSON := filepath.Join(folderPath, "HEURISTIC.json")
+			if _, err := os.Stat(heuristicJSON); err == nil {
+				content, err := os.ReadFile(heuristicJSON)
+				if err != nil {
+					log.Printf("[%s] Warning: failed to read HEURISTIC.json in %s: %v", w.watcherID, entry.Name(), err)
+					continue
+				}
+
+				var data HeuristicData
+				if err := json.Unmarshal(content, &data); err != nil {
+					log.Printf("[%s] Warning: failed to parse HEURISTIC.json in %s: %v", w.watcherID, entry.Name(), err)
+					continue
+				}
+
+				units = append(units, HeuristicUnit{
+					Path:       heuristicJSON,
+					ID:         entry.Name(),
+					Content:    data.Message,
+					Model:      data.Model,
+					FolderPath: folderPath,
+				})
+				continue // Skip to next folder
+			}
+
+			// Fallback to HEURISTIC.md
 			heuristicMD := filepath.Join(folderPath, "HEURISTIC.md")
 			if _, err := os.Stat(heuristicMD); err == nil {
 				content, err := os.ReadFile(heuristicMD)
@@ -204,6 +237,7 @@ func (w *HeuristicWatcher) checkForHeuristicUnits() ([]HeuristicUnit, error) {
 					ID:         entry.Name(),
 					Content:    string(content),
 					FolderPath: folderPath,
+					Model:      "", // No model from MD
 				})
 			}
 		}
@@ -374,7 +408,7 @@ func (w *HeuristicWatcher) processHeuristicUnit(unit HeuristicUnit) error {
 	prompt := w.buildHeuristicPrompt(unit.Content)
 
 	// Execute the agent in prompt-only mode
-	output, exitCode, err := w.executeAgent(unit.FolderPath, prompt)
+	output, exitCode, err := w.executeAgent(unit.FolderPath, prompt, unit.Model)
 	if err != nil {
 		w.markHeuristicFailed(unit, err, startTime)
 		return err
@@ -440,11 +474,16 @@ func (w *HeuristicWatcher) processHeuristicUnit(unit HeuristicUnit) error {
 }
 
 // executeAgent runs the agent in prompt-only mode and captures output
-func (w *HeuristicWatcher) executeAgent(folderPath, prompt string) (string, int, error) {
+func (w *HeuristicWatcher) executeAgent(folderPath, prompt, model string) (string, int, error) {
 	// Find invoke-agent.sh
 	invokeScript := findInvokeScript()
 	if invokeScript == "" {
 		return "", 1, fmt.Errorf("invoke-agent.sh not found")
+	}
+
+	agentToUse := w.currentAgent
+	if model != "" && isValidAgent(model) {
+		agentToUse = model
 	}
 
 	// Write prompt to a temp file
@@ -455,13 +494,13 @@ func (w *HeuristicWatcher) executeAgent(folderPath, prompt string) (string, int,
 	defer os.Remove(promptFile)
 
 	// Build command arguments - ALWAYS use prompt mode (-p)
-	cmdArgs := []string{"-p", "-a", w.currentAgent, "-f", promptFile}
+	cmdArgs := []string{"-p", "-a", agentToUse, "-f", promptFile}
 
 	// Create command
 	cmd := exec.Command(invokeScript, cmdArgs...)
 	cmd.Dir = folderPath
 	cmd.Env = append(os.Environ(),
-		"AGENT_PRESET="+w.currentAgent,
+		"AGENT_PRESET="+agentToUse,
 		"AGENT_RECORDS_PATH="+w.recordsDir,
 	)
 
@@ -478,7 +517,7 @@ func (w *HeuristicWatcher) executeAgent(folderPath, prompt string) (string, int,
 	cmd.Stderr = outFile
 	cmd.Stdin = os.Stdin
 
-	log.Printf("[%s] Invoking agent %s in prompt-only mode", w.watcherID, w.currentAgent)
+	log.Printf("[%s] Invoking agent %s in prompt-only mode", w.watcherID, agentToUse)
 
 	exitCode := 0
 	if err := cmd.Run(); err != nil {
