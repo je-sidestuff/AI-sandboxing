@@ -103,9 +103,9 @@ PYEOF
     mv "$OUTER_DIR/repo" "$WORKER_DIR"
     echo "Moved to: ${WORKER_DIR}"
 
-    # Step 7: Wait for the AI to process the work unit (up to 10 minutes)
-    echo "Step 7: Waiting for AI processing (up to 10 minutes)..."
-    TIMEOUT=600
+    # Step 7: Wait for the AI to process the work unit (up to 1 hour)
+    echo "Step 7: Waiting for AI processing (up to 1 hour)..."
+    TIMEOUT=3600
     ELAPSED=0
     while [ ! -d "${OUTPUT_DIR}" ]; do
         sleep 5

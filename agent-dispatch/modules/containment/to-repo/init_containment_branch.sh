@@ -124,12 +124,12 @@ echo ""
 echo "The agent-worker will pick up this work unit from the input directory."
 echo "========================================"
 
-# Wait for up to 10 minutes for the AI to process the work unit
+# Wait for up to 1 hour for the AI to process the work unit
 # The agent-worker moves completed work to /workspaces/slopspaces/output/
 OUTPUT_DIR="/workspaces/slopspaces/output/content/containment_${DISPATCHER_NAME}_${UNIX_TIMESTAMP}"
 echo "Waiting for the AI to process the repository..."
 echo "Expected output location: ${OUTPUT_DIR}"
-TIMEOUT=600 # 10 minutes in seconds
+TIMEOUT=3600 # 1 hour in seconds
 ELAPSED=0
 while [ ! -d "${OUTPUT_DIR}" ]; do
     sleep 5
