@@ -170,15 +170,15 @@ The destination repository name comes from the request. Common patterns:
 ### Step 3: Build the Initial Instruction
 
 The `instruction` field should:
-1. Create the new repository with appropriate structure
-2. Set up ERR working directories (`decomposition/`, `distillation/`, `recrystallization/`)
-3. Document the source being transformed
-4. Establish the detail level
+1. Set up ERR working directories (`decomposition/`, `distillation/`, `recrystallization/`)
+2. Document the source being transformed
+3. Establish the detail level
+
+**IMPORTANT:** Do NOT include "Create the repository X" in the instruction - the dispatcher creates the repo using the `sequence_repo_name` field. Including repo creation in the instruction causes duplicate repos.
 
 Example:
 ```
-Create the repository <destination> with ERR working structure.
-Set up folders: decomposition/, distillation/, recrystallization/.
+Set up ERR working structure with folders: decomposition/, distillation/, recrystallization/.
 Document in README.md that this is an ERR transformation of <source> at <detail> detail level.
 Include a MANIFEST.md to track particle inventory.
 ```
@@ -226,7 +226,8 @@ Given heuristic input:
 ```json
 {
   "type": "sequence-to-new-repo",
-  "instruction": "Create the repository AI-evo-experimental1 with ERR working structure. Set up folders: decomposition/, distillation/, recrystallization/. Create README.md documenting this as an ERR transformation of agent-events at MEDIUM detail level. Create MANIFEST.md to track particle inventory throughout the process.",
+  "sequence_repo_name": "AI-evo-experimental1",
+  "instruction": "Set up ERR working structure with folders: decomposition/, distillation/, recrystallization/. Create README.md documenting this as an ERR transformation of agent-events at MEDIUM detail level. Create MANIFEST.md to track particle inventory throughout the process.",
   "sequence_commands": [
     "Phase 1.1 - Fission: Analyze agent-events repository. Identify all functional molecules (major feature areas). Break molecules into atoms (individual functional units). Document in decomposition/MOLECULES.md and decomposition/ATOMS.md with dependency graph.",
     "Phase 1.2 - Quark Extraction: For complex atoms identified in Phase 1.1, extract constituent quarks. Document in decomposition/QUARKS.md. Update MANIFEST.md with complete particle inventory.",
@@ -255,7 +256,8 @@ Given heuristic input:
 ```json
 {
   "type": "sequence-to-new-repo",
-  "instruction": "Create repository utils-v2 with ERR structure (decomposition/, distillation/, recrystallization/). Document as LOW detail ERR of my-utils in README.md.",
+  "sequence_repo_name": "utils-v2",
+  "instruction": "Set up ERR structure with folders: decomposition/, distillation/, recrystallization/. Document as LOW detail ERR of my-utils in README.md.",
   "sequence_commands": [
     "Phase 1 - Molecular Analysis: Analyze my-utils and identify major functional molecules. Skip quark extraction. Document molecules and dependencies in decomposition/MOLECULES.md.",
     "Phase 2.1 - Distill Core Molecules: Distill the primary functional molecules. Write to distillation/. Verify functionality.",
@@ -278,7 +280,8 @@ Given heuristic input:
 ```json
 {
   "type": "sequence-to-new-repo",
-  "instruction": "Create repository auth-service-v2 with full ERR structure. Set up decomposition/, distillation/, recrystallization/ with subdirectories quarks/, atoms/, molecules/. Create comprehensive MANIFEST.md. Document as HIGH detail ERR of auth-service.",
+  "sequence_repo_name": "auth-service-v2",
+  "instruction": "Set up full ERR structure with decomposition/, distillation/, recrystallization/ and subdirectories quarks/, atoms/, molecules/. Create comprehensive MANIFEST.md. Document as HIGH detail ERR of auth-service in README.md.",
   "sequence_commands": [
     "Phase 1.1 - Initial Analysis: Analyze auth-service repository structure. Identify all major functional areas. Create initial documentation in decomposition/OVERVIEW.md.",
     "Phase 1.2 - Fission: Break identified functional areas into molecules. Document in decomposition/molecules/. Create dependency graph.",

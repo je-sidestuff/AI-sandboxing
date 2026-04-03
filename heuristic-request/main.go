@@ -278,6 +278,7 @@ For multi-step tasks that should be executed as a series of timed steps in a NEW
 %sjson DISPATCH.json
 {
   "type": "sequence-to-new-repo",
+  "sequence_repo_name": "descriptive-repo-name",
   "instruction": "Initial setup instruction (creates repo structure)",
   "sequence_commands": [
     "Step 1: First action to perform",
@@ -290,8 +291,9 @@ For multi-step tasks that should be executed as a series of timed steps in a NEW
 %s
 
 **Guidelines for sequence-to-new-repo:**
+- **REQUIRED: sequence_repo_name** - Always specify a descriptive repo name. Do NOT embed the repo name in the instruction text; that causes duplicate repo creation.
 - Use when the request mentions: "chapters", "phases", "series", "step-by-step", "tutorial", "guide", "multi-part", "staged"
-- First instruction creates the repo structure (README, folder layout)
+- First instruction creates the repo structure (README, folder layout) - do NOT include "create repo X" in the instruction since the dispatcher handles repo creation
 - Each sequence_command is a discrete, self-contained step
 - Steps should be logically ordered - later steps may reference earlier work
 - 20 minutes between steps is the default; adjust based on complexity (5-60 minutes typical)

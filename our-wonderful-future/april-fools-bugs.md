@@ -83,6 +83,165 @@ func (d *Dispatcher) repoExists(owner, name string) (bool, error) {
 }
 ```
 
+### Code Analysis Findings (April 2026)
+
+After reviewing the actual codebase, **Guess 1 (Race Condition)** appears to be **incorrect**:
+
+1. The `DISPATCHING.md` marker (created at line 871 of main.go) prevents re-processing of the same dispatch unit within a single dispatcher instance
+2. The initial terraform apply completes synchronously before `NeedsMonitoring` is set to `true`, so polling cannot overlap with initial setup
+3. Terraform applies are serialized per-flow since the polling loop processes flows sequentially
+
+**Guesses 2 and 3 remain possible** but lack supporting evidence.
+
+**Additional Possible Causes** not yet documented:
+
+1. **Multiple dispatcher instances**: If two dispatcher processes with different `dispatcherID`s monitor the same input directory, both could pick up the same dispatch unit simultaneously (TOCTOU race on `DISPATCHING.md` check)
+
+2. **File system latency**: The `os.Stat()` check for `DISPATCHING.md` followed by `os.WriteFile()` is not atomic - two processes could both pass the check before either creates the file
+
+3. **Repo name generation is unique**: Each dispatch generates a unique repo name (`seq-YYYYMMDD-HHMMSS-uuid8`) with timestamp and UUID, so two repos would have **different names**, not duplicates of the **same name**
+
+### Information Needed to Diagnose
+
+Before attempting a fix, collect the following evidence:
+
+| Data Point | How to Collect | What It Tells Us |
+|------------|----------------|------------------|
+| **Names of both repos** | Check GitHub org for repos created around incident time | Were they identical names (state issue) or different names (duplicate dispatch)? |
+| **Timestamps of creation** | GitHub API: `gh repo list --json name,createdAt` | Did they happen simultaneously (race) or sequentially (retry)? |
+| **Dispatcher logs** | Check log output for `processSequenceToNewRepoDispatch` entries | Was the same dispatch unit processed twice? |
+| **Terraform state files** | Check `dispatcher-live/flows/sequence-to-new-repo/*/` for `.tfstate` | Are there multiple flow directories? Is state intact? |
+| **Number of dispatchers running** | Check running processes: `ps aux \| grep agent-dispatch` | Were multiple dispatcher instances active? |
+| **Flow records** | Check `records/dispatch-watch/*.json` | Are there duplicate flow records for the same dispatch? |
+
+### Investigation Update (April 3, 2026)
+
+**Reproduction Rate**: The bug reproduces **100% of the time** when a heuristic dispatch triggers a sequence-to-new-repo flow. This is not a sporadic race condition but a consistent behavior.
+
+**Logging Added**: Instrumented `checkForDispatchUnits` function (line 720 of main.go) with:
+```go
+log.Printf("[%s] Found dispatch unit: %s (DISPATCHING.md exists: %v)", d.dispatcherID, entry.Name(), dispatchingMDExists)
+```
+
+**Next Step**: Run the sequence again to collect logs and identify the exact duplicate creation mechanism.
+
+### Recommended Next Steps
+
+1. **Immediate**: Run `gh repo list je-sidestuff --json name,createdAt,description -L 100` to identify the duplicate repos and their creation timestamps
+
+2. ~~**Add logging**: Instrument the `checkForDispatchUnits` function to log when a dispatch unit is detected~~ ✅ Done
+
+3. **Add atomic locking**: Replace the TOCTOU-vulnerable `DISPATCHING.md` check with file-based locking using `flock` or a `.lock` file with `O_EXCL`
+
+4. **Run sequence and collect logs**: With logging now in place, trigger a heuristic dispatch → sequence-to-new-repo flow and capture the logs to identify the duplicate creation mechanism
+
+### Notes Taken During Test Run
+
+The anonymously named repo (seq-20260403-105901-52e183fb) is created first, before the first work unit is done.
+
+### Follow-up Observation (April 3, 2026 - Afternoon)
+
+**New Finding**: When running a subsequent test, the duplicate repo creation bug did NOT occur, but a different issue appeared:
+
+- **Expected behavior**: When the heuristic layer dispatches a sequence-to-new-repo, it should be able to specify a custom repo name
+- **Actual behavior**: The repo was created with an auto-generated name (`seq-20260403-123748-6b2fc2ed`) instead of a custom name
+
+**Key Evidence from Terraform Output** (from `ignored-scratch/no-name-no-bug.txt`):
+```
++ name = "seq-20260403-123748-6b2fc2ed"
+```
+
+This suggests either:
+1. The heuristic layer is not passing a custom repo name in the dispatch unit
+2. The worker layer (Go dispatcher) is not reading the custom repo name from the dispatch unit
+3. The Terraform variable for custom repo name is not being set properly
+
+**Note**: The absence of the duplicate repo bug in this run is interesting - it may indicate the bug is intermittent or was partially fixed by earlier changes.
+
+### Fix Applied (April 3, 2026)
+
+**Root Cause Identified**: Both the heuristic layer and worker layer lacked support for custom repo names:
+1. The `Dispatch` struct in `agent-dispatch/main.go` had no field for custom sequence repo names
+2. The `processSequenceToNewRepoDispatch` function always generated an auto-name
+3. The heuristic prompt template didn't include a field for custom repo names
+4. The ERR-EXECUTION.md examples instructed agents to include "Create repository X" in the instruction, causing duplicate repos
+
+**Status: IMPLEMENTED ✅**
+
+The following changes have been applied:
+
+1. **agent-dispatch/main.go:106** - Added `SequenceRepoName` field to `Dispatch` struct:
+   ```go
+   SequenceRepoName string `json:"sequence_repo_name,omitempty"` // For sequence-to-new-repo: custom repo name
+   ```
+
+2. **agent-dispatch/main.go:1191-1200** - Updated `processSequenceToNewRepoDispatch` to use custom name when provided:
+   ```go
+   var targetRepoName string
+   if unit.Dispatch.SequenceRepoName != "" {
+       targetRepoName = unit.Dispatch.SequenceRepoName
+       log.Printf("[%s] Using custom repo name for sequence-to-new-repo: %s", d.dispatcherID, targetRepoName)
+   } else {
+       // Auto-generate name as before
+   }
+   ```
+
+3. **heuristic-request/main.go:281** - Updated prompt template to include `sequence_repo_name` as required:
+   ```json
+   {
+     "type": "sequence-to-new-repo",
+     "sequence_repo_name": "descriptive-repo-name",
+     ...
+   }
+   ```
+   Also added guidance: "Do NOT embed the repo name in the instruction text; that causes duplicate repo creation."
+
+4. **heuristic-request/ERR-EXECUTION.md** - Updated all example dispatches to:
+   - Include `sequence_repo_name` field
+   - Remove "Create repository X" from instruction text
+   - Add explicit warning about duplicate repo creation
+
+---
+
+### How Custom Repo Naming Works NOW (Fixed April 3, 2026)
+
+Custom repo naming now works correctly through the `sequence_repo_name` field:
+
+**The Fixed Flow:**
+1. The heuristic layer generates a `sequence-to-new-repo` DISPATCH.json with `sequence_repo_name` field
+2. The Go dispatcher reads `sequence_repo_name` and uses it as the target repo name
+3. If `sequence_repo_name` is empty, the dispatcher falls back to auto-generated name
+4. The instruction text should NOT mention "create repository X" - just set up the structure within the already-created repo
+
+**Example of Correct Dispatch:**
+```json
+{
+  "type": "sequence-to-new-repo",
+  "sequence_repo_name": "AI-evo-experimental1",
+  "instruction": "Set up ERR working structure with folders...",
+  ...
+}
+```
+
+**Result:** One repo created with the custom name, no duplicates.
+
+**Previous Behavior (Bug):**
+
+Before this fix, the heuristic prompt taught agents to include repo names in the instruction text:
+```json
+{
+  "type": "sequence-to-new-repo",
+  "instruction": "Create the repository AI-evo-experimental1 with ERR working structure...",
+  ...
+}
+```
+
+This caused duplicate repos because:
+1. The dispatcher created `seq-YYYYMMDD-HHMMSS-uuid` as the containment repo
+2. The AI executing the instruction created `AI-evo-experimental1` as instructed
+
+
+
 ---
 
 ## Bug 2: Conclusory State Not Detected, Terraform Config Not Removed

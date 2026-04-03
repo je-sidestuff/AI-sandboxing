@@ -103,6 +103,7 @@ type Dispatch struct {
 	Metadata        map[string]string `json:"metadata,omitempty"`        // Additional metadata
 
 	// Sequence-to-new-repo specific fields
+	SequenceRepoName       string   `json:"sequence_repo_name,omitempty"`       // For sequence-to-new-repo: custom repo name (if not set, auto-generates seq-YYYYMMDD-HHMMSS-uuid)
 	SequenceCommands       []string `json:"sequence_commands,omitempty"`        // For sequence-to-new-repo: list of sequential commands
 	SequenceMinutesBetween int      `json:"sequence_minutes_between,omitempty"` // For sequence-to-new-repo: minutes between steps (default: 20)
 }
@@ -1187,10 +1188,17 @@ func (d *Dispatcher) processSequenceToNewRepoDispatch(unit DispatchUnit) error {
 		minutesBetween = 20
 	}
 
-	// Generate a unique target repo name
-	timestamp := time.Now().Format("20060102-150405")
-	shortID := uuid.New().String()[:8]
-	targetRepoName := fmt.Sprintf("seq-%s-%s", timestamp, shortID)
+	// Determine target repo name: use custom name if provided, otherwise auto-generate
+	var targetRepoName string
+	if unit.Dispatch.SequenceRepoName != "" {
+		targetRepoName = unit.Dispatch.SequenceRepoName
+		log.Printf("[%s] Using custom repo name for sequence-to-new-repo: %s", d.dispatcherID, targetRepoName)
+	} else {
+		timestamp := time.Now().Format("20060102-150405")
+		shortID := uuid.New().String()[:8]
+		targetRepoName = fmt.Sprintf("seq-%s-%s", timestamp, shortID)
+		log.Printf("[%s] Auto-generated repo name for sequence-to-new-repo: %s", d.dispatcherID, targetRepoName)
+	}
 
 	// Generate a unique flow ID
 	flowID := generateFlowID(DispatchTypeSequenceToNewRepo)
