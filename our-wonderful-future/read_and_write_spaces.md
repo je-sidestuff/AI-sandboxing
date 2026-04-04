@@ -14,6 +14,8 @@ Read spaces provide **material for agents to read**. The key mechanism: content 
 
 Write spaces are directories where agents can create, modify, and delete files. These are typically per-invocation unique directories, ensuring clean isolation between agent runs.
 
+The defining characteristic of write spaces is that modifications have an impact on the wider world. Write spaces are the only places agents perform impacting writes.
+
 ### Configurability-First Design
 
 Rather than defining specific long-lived directories upfront, we design the system to be configurable from the start:
@@ -27,32 +29,33 @@ This means the specific directories mentioned in this document are *defaults*, n
 
 ---
 
-## What We Know Already
+## Current State
 
-### Current State
+### Heuristic-Request (`heuristic-request/main.go`)
 
-1. **Heuristic-request** (`heuristic-request/main.go`)
-   - Runs agents in **prompt-only mode** (`-p` flag) - effectively read-only
-   - Current working directory: set to the heuristic folder being processed
-   - No explicit directory restrictions configured yet
-   - Default paths:
-     - `HEURISTIC_DIR`: `/workspaces/slopspaces/heuristic`
-     - `REQUEST_DIR`: `/workspaces/slopspaces/input/any`
-     - `RECORDS_DIR`: `/workspaces/slopspaces/agent-records/`
+- Runs agents in **prompt-only mode** (`-p` flag) - effectively read-only
+- Current working directory: set to the heuristic folder being processed
+- No explicit directory restrictions configured yet
+- Default paths:
+  - `HEURISTIC_DIR`: `/workspaces/slopspaces/heuristic`
+  - `REQUEST_DIR`: `/workspaces/slopspaces/input/any`
+  - `RECORDS_DIR`: `/workspaces/slopspaces/agent-records/`
 
-2. **Agent-worker** (`agent-worker/main.go`)
-   - Runs agents in **prompt** (`-p`) or **execute** (`-e`) mode
-   - Current working directory: set to the work unit folder
-   - Default paths:
-     - `INPUT_DIR`: `/workspaces/slopspaces/input/`
-     - `OUTPUT_DIR`: `/workspaces/slopspaces/output/`
-     - `RECORDS_DIR`: `/workspaces/slopspaces/agent-records/`
+### Agent-Worker (`agent-worker/main.go`)
 
-3. **invoke-agent.sh** (`ambiguous-agent/invoke-agent.sh`)
-   - Supports `--add-dir` flag for claude and copilot presets
-   - Currently adds `$records_path` as an allowed directory
-   - In execute mode, also adds `$call_pwd` (the working directory)
-   - The `--add-dir` flag maps to Claude's `--add-dir` which adds to allowed read/write paths
+- Runs agents in **prompt** (`-p`) or **execute** (`-e`) mode
+- Current working directory: set to the work unit folder
+- Default paths:
+  - `INPUT_DIR`: `/workspaces/slopspaces/input/`
+  - `OUTPUT_DIR`: `/workspaces/slopspaces/output/`
+  - `RECORDS_DIR`: `/workspaces/slopspaces/agent-records/`
+
+### invoke-agent.sh (`ambiguous-agent/invoke-agent.sh`)
+
+- Supports `--add-dir` flag for claude and copilot presets
+- Currently adds `$records_path` as an allowed directory
+- In execute mode, also adds `$call_pwd` (the working directory)
+- The `--add-dir` flag maps to Claude's `--add-dir` which adds to allowed read/write paths
 
 ### The Slopspaces Directory Tree
 
@@ -101,9 +104,29 @@ From the agent's perspective, these files simply exist and cannot be written. Th
 
 Since heuristic-request uses prompt-only mode, the entire invocation is conceptually read-only. However, specifying what the agent can *see* remains important for both security and clarity.
 
-**Currently known read needs:**
+**Read needs:**
 - The heuristic folder being processed (for context files alongside HEURISTIC.json/md)
 - Agent records (for understanding past decisions/context)
+
+### Additional Read Space Content
+
+Read spaces support several categories of content:
+
+- **Repositories**: Sets of one-or-more repositories for the agent to see or work on
+- **Reference materials**: Directories containing peripheral reference material such as documents or resource files
+- **Declarative tool results**: Directories containing results from submissions of declarative-tool read manifests
+
+### Codebase Access
+
+When this project is in a more complete state, runtime binaries will not normally see dev-time directories on a regular basis. The AI-sandboxing codebase is a development-time resource, not a runtime dependency.
+
+### External Repository Access
+
+External repositories (e.g., cloned repos in slopspaces/working) are sometimes included in read spaces, depending on the task at hand.
+
+### Shared Reference Resources
+
+Read spaces require a standard directory form. When sharing directories across invocations, we use copies of directories or read-only mounting techniques to maintain isolation.
 
 ### Configuring Read Spaces
 
@@ -112,33 +135,11 @@ Read spaces are configured through a hierarchy:
 2. **Per-dispatch-type configuration**
 3. **System-wide defaults** (lowest priority)
 
-### Questions About Read Spaces
-
-#### Q1: What additional directories should heuristic-request be able to read?
-
-Directories like sets of one-or-more repositories to see or work on.
-Directories containing peripheral reference material, maybe documents or resource files.
-Directories containing results from submissions of declarative-tool-tool read manifests.
-
-#### Q2: Should heuristic-request have read access to the main codebase (AI-sandboxing)?
-
-When this project is in a more complete state it will not be usual for runtime binaries to see dev-time directories on a regular basis.
-
-#### Q3: Should read spaces include access to external repositories (e.g., cloned repos in slopspaces/working)?
-
-Sometimes, yes.
-
-#### Q4: Should there be a dedicated "reference" directory in slopspaces for shared read-only resources?
-
-This question is unclear -- there should be standard directory form for read-spaces to exist in. We must remember that we need copies of directories or read-only mounting techniques if they are shared.
-
 ---
 
 ## Write Spaces
 
-Write spaces are directories where agents can create, modify, and delete files. Unlike read spaces, write spaces are typically **per-invocation unique**, providing clean isolation between agent runs.
-
-<EDIT: The more important distinction is that when agents write into these directories the modifications will have an impact on the wider world. Write spaces are the only places agents will be performing impacting writes.>
+Write spaces are directories where agents can create, modify, and delete files. The defining characteristic is that modifications in write spaces have an impact on the wider world—these are the only places agents perform impacting writes.
 
 ### Design Principles
 
@@ -150,14 +151,30 @@ Write spaces are directories where agents can create, modify, and delete files. 
 
 Agent-worker executes tasks that need to produce output.
 
-**Currently known write needs:**
+**Write needs:**
 - The work unit folder (current working directory)
 - Output content directory
 - Agent records directory
 
 ### For Heuristic-Request
 
-Heuristic-request runs in prompt-only mode, so it should have **no write spaces**. All writing is done by the Go program itself, not the agent.
+Heuristic-request runs in prompt-only mode, so it has **no write spaces**. All writing is done by the Go program itself, not the agent.
+
+### Work Unit Write Spaces
+
+Write access includes a dedicated write-space directory for each work unit at minimum. This space may be detached and preserved for future sequential work units in multi-step workflows.
+
+### Shared Scratch Space
+
+Agent-worker has access to a shared "scratch" or "temp" directory in slopspaces for temporary working files.
+
+### Sequence-to-New-Repo Dispatches
+
+For sequence-to-new-repo dispatches that create new repos in slopspaces/working, we use a flexibility-first approach. We avoid over-optimizing for this case initially, but will develop efficiency measures when the same write space is used repeatedly.
+
+### Output Content Handling
+
+In the immediate system, any writes that occur "on the outside world" happen through the submission of declarative manifests executed by detached deterministic agents. The content in the immediate write-space is "filtered" by these agents, so the immediate agent may write whatever it wants to content within the write space.
 
 ### Configuring Write Spaces
 
@@ -166,95 +183,69 @@ Write spaces follow the same configuration hierarchy as read spaces:
 2. **Per-dispatch-type configuration**
 3. **System-wide defaults** (lowest priority)
 
-### Questions About Write Spaces
-
-#### Q5: For agent-worker, should write access be limited to only the current work unit folder?
-
--- Possibly. It should be in a dedicated write-space directory dedicated to this work unit at a minimum (although potentially detached/preserved for future sequential work units).
-
-#### Q6: Should agent-worker be able to write to a shared "scratch" or "temp" directory in slopspaces?
-
--- Yes. Good idea. Not sure of the details butg this seems like a good measure.
-
-#### Q7: How should write access work for sequence-to-new-repo dispatches? (They create new repos in slopspaces/working)
-
--- This is uncertain. We don't want to over-optimize for this case, but it's also an important example.
-
-We want to start with a flexibility-first approach but will want to make things efficient eventually if the same write space will be used repeatedly.
-
-#### Q8: Should there be explicit write access to output/content, or should the Go program move files there after the agent completes?
-
--- In the immediate system any writes that occur "on the outside world" will happen through the submission of declarative manifests which are executed by detached deterministic agents. The content in the immediate write-space will be "filtered" by these agents and so the immediate agent may write whatever it wants to content within the write space.
-
 ---
 
 ## Implementation Approach
 
-### Proposed Directory Preparation
+### Directory Preparation
 
 Before invoking an agent:
 1. Create a working directory in slopspaces (if needed)
 2. `cd` to that directory
 3. Pass `--add-dir` flags for additional read/write access
 
-### Questions About Implementation
+### Write Space Reuse Strategy
 
-#### Q9: Should we create a new subdirectory per invocation, or reuse a consistent working directory?
-
-**Answer**: We use a hybrid approach:
+We use a hybrid approach:
 
 - **Write spaces**: Per-invocation unique directories are the primary space, ensuring clean isolation between agent runs
 - **Read spaces**: Appropriate for sharing and multi-read access across invocations
 
-This means agents start fresh each time (write space), while having access to shared reference material (read spaces). We may develop strategies for selective write space reuse in specific scenarios, but isolation is the default.
+Agents start fresh each time (write space), while having access to shared reference material (read spaces).
 
-**Follow-up**: What criteria would trigger write space reuse? (e.g., continuation of a multi-step sequence, retry of a failed invocation)
+Write space reuse is triggered by:
+- Continuation of a multi-step sequence
+- Retry of a failed invocation
 
--- Both of these.
+### Working Directory Naming
 
-#### Q10: How should the working directory be named? (timestamp, UUID, heuristic ID, etc.)
+Working directories are named using some combination of timestamp, UUID, and heuristic ID. The exact naming convention can evolve based on operational needs.
 
--- Some combination of these probably, we don't need to get it perfect up-front.
+### Symbolic Links
 
-#### Q11: Should the Go programs (heuristic-request, agent-worker) create symbolic links in the working directory to reference materials?
+Since we can always assume we are running on Linux or in a Linux container, symbolic links are a viable mechanism for referencing materials in the working directory. Implementation requires care to use them safely.
 
--- We can always assume we are running on linux/in a linux container; so this might be a worthwhile measure. We just have to figure out how to use it safely.
+### Read-Only vs Read-Write Access
 
-#### Q12: Should there be separate read-spaces and write-spaces flags, or a single allowed-directories concept?
-
-Note: Claude Code's `--add-dir` grants both read AND write access. For read-only access, we'd need prompt-only mode or a different mechanism.
-
--- The file system location will differentiate which is which for the agent. Remember that we don't care if read-space content writing is performed because the content is either unwritable or disposable
+Claude Code's `--add-dir` grants both read AND write access. The file system location differentiates which is which for the agent. We don't need separate flags because:
+- Read-space content writing is harmless since the content is either unwritable or disposable
+- The directory structure itself communicates the intended usage pattern
 
 ---
 
 ## Security Considerations
 
-### Questions About Security
+### Sensitive Directory Protection
 
-#### Q13: Should agents be prevented from accessing sensitive directories (e.g., ~/.ssh, ~/.aws, ~/.config)?
+Agents do not have access to sensitive directories (e.g., ~/.ssh, ~/.aws, ~/.config). Our approach is **non-inclusion rather than tracked prevention**—we simply don't add these directories to the agent's allowed paths.
 
-**Answer**: Yes, agents should not have access to sensitive directories. Our approach is **non-inclusion rather than tracked prevention**—we simply don't add these directories to the agent's allowed paths. The security model works by explicit inclusion (allowlist), not by blocking specific paths.
+The security model works by explicit inclusion (allowlist), not by blocking specific paths. This aligns with the principle of least privilege: agents only see what we explicitly grant, rather than seeing everything except what we block.
 
-This aligns with the principle of least privilege: agents only see what we explicitly grant, rather than seeing everything except what we block.
+### Auditing and Logging
 
-**Follow-up**: Should we log or alert when an agent attempts to access paths outside its allowed spaces? (For debugging/auditing purposes)
+Logging or alerting when an agent attempts to access paths outside its allowed spaces is a potential future feature for debugging and auditing purposes.
 
--- Maybe, but let's note this and worry about it later.
+### Blocklist Consideration
 
-#### Q14: Should there be a blocklist of paths that are never allowed?
+Given the allowlist approach, a blocklist would only serve as a safety net or for documentation purposes. This is a future consideration.
 
-Note: Given the allowlist approach established in Q13, a blocklist would only serve as a safety net or for documentation purposes.
+### Filesystem Isolation
 
--- Maybe, but let's note this and worry about it later.
+Slopspaces deployment normally uses a separate filesystem or filesystem isolation (containers, namespaces). The application itself does not need to know about this—it's an infrastructure concern. We avoid design decisions that would preclude this deployment model.
 
-#### Q15: Should slopspaces be on a separate filesystem or use filesystem isolation (containers, namespaces)?
+### Symlink and Traversal Protection
 
--- Yes, this should be a normal means of deploying the system, but the application should not need to know about this. We won't think about this unless we are trying to do something that would otherwise preclude it.
-
-#### Q16: How do we prevent agents from escaping their sandbox via symlinks or .. traversal?
-
--- Another 'document for now and keep secure by default' scneraio.
+Protection against sandbox escape via symlinks or `..` traversal is a documented security requirement. The system maintains secure defaults while specific mitigation strategies are developed.
 
 ---
 
@@ -265,28 +256,24 @@ Configuration is a first-class concern in this system. While we use convention-o
 ### Configuration Hierarchy
 
 1. **Per-invocation overrides**: Specified in the dispatch/instruction itself
-2. **Per-dispatch-type defaults**: Different dispatch types (repo-isolation, direct, sequence) may have different defaults
+2. **Per-dispatch-type defaults**: Different dispatch types (repo-isolation, direct, sequence) have different defaults
 3. **System-wide defaults**: Fallback when no specific configuration exists
 
-### Questions About Configuration
+### Environment Variables
 
-#### Q17: Should read/write spaces be configurable via environment variables?
+Environment variables may provide defaults, but read/write spaces are more normally a per-invocation concern.
 
--- Maybe defaults, but it will be more normal for them to be a per-invocation concern.
+### Per-Dispatch-Type Configuration
 
-#### Q18: Should there be per-dispatch-type configurations (repo-isolation vs direct vs sequence)?
+Different dispatch types (repo-isolation, direct, sequence) have their own configurations.
 
--- Yes.
+### Glob Pattern Support
 
-#### Q19: Should the configuration support glob patterns (e.g., /workspaces/slopspaces/**)?
-
--- We probably don't need this up-front.
+Glob pattern support (e.g., /workspaces/slopspaces/**) is not needed up-front and can be added later if necessary.
 
 ---
 
-## Next Steps After This Brainstorm
-
-Once the questions above are answered, we'll:
+## Next Steps
 
 1. Update `heuristic-request/main.go` to:
    - Change to a prepared working directory before invoking the agent
@@ -320,3 +307,164 @@ fi
 This means:
 - In prompt mode: agent has records path added (but can't write anyway)
 - In execute mode: agent has records path AND current directory added
+
+---
+
+## Implementation Plan
+
+This section documents how we'll proceed with implementing read/write spaces support, starting with heuristic-request. The implementation follows our principles of backward compatibility and auto-create paradigms.
+
+### Target Agent Environment
+
+When a heuristic agent runs in a fully isolated mode, the agent's environment follows this structure:
+
+```
+/agent/                    # Working directory for the agent
+├── read/                  # Read space(s) mounted here
+│   ├── ai-sandboxing/     # Example: repository checkout
+│   └── reference/         # Example: reference materials
+└── write/                 # Write space(s) mounted here
+    └── primary/           # Always present; the main write space
+```
+
+**Key principles:**
+- The agent's working directory is `/agent`
+- From the agent's perspective, only `/agent` and its contents are visible
+- Read spaces appear under `/agent/read/` with their alias as the subdirectory name
+- Write spaces appear under `/agent/write/`, with `primary` always present
+
+**Deployment modes:**
+1. **Container mode**: Mount directories into the container filesystem at `/agent/read` and `/agent/write`
+2. **Lightweight mode**: Use `--add-dir` flags with symbolic links or direct paths, achieving similar isolation without full containerization
+
+### Phase 1: Heuristic-Request Read Spaces (Lightweight Mode)
+
+**Goal**: Enable heuristic-request agents to see new repository checkouts (starting with the AI-sandboxing repository itself), using the lightweight deployment approach.
+
+**Approach**: Extend HEURISTIC.json with an optional `readSpaces` field that can designate additional directories for the agent to access. When absent, the current behavior applies unchanged.
+
+#### HEURISTIC.json Extension
+
+```json
+{
+  "heuristic": "...",
+  "prompt": "...",
+  "readSpaces": {
+    "repositories": [
+      {
+        "path": "/workspaces/workspace/sandbox/AI-sandboxing",
+        "alias": "ai-sandboxing"
+      }
+    ]
+  }
+}
+```
+
+**Field semantics:**
+- `readSpaces` (optional): Object containing read space configuration
+- `readSpaces.repositories` (optional): Array of repository paths to include as read spaces
+  - `path`: Absolute path to the repository
+  - `alias` (optional): A friendly name for the repository (used in agent context)
+
+#### Backward Compatibility
+
+When `readSpaces` is absent or empty:
+- Heuristic-request behaves exactly as it does today
+- No additional `--add-dir` flags are passed
+- No changes to working directory handling
+
+This follows our auto-create paradigm: the feature exists when configured, but the absence of configuration yields default behavior identical to current functionality.
+
+#### Implementation Changes to heuristic-request/main.go
+
+1. **Parse readSpaces from HEURISTIC.json**: Extend the heuristic parsing to recognize the `readSpaces` field
+2. **Pass additional --add-dir flags**: For each repository in `readSpaces.repositories`, add the corresponding `--add-dir` flag when invoking the agent
+3. **No working directory changes yet**: Phase 1 keeps the current working directory behavior; we only add read access to additional paths
+
+#### First Use-Case: AI-sandboxing Repository
+
+The immediate goal is a heuristic that can examine the AI-sandboxing repository. Example HEURISTIC.json:
+
+```json
+{
+  "heuristic": "review-codebase",
+  "prompt": "Review the AI-sandboxing codebase structure and provide observations.",
+  "readSpaces": {
+    "repositories": [
+      {
+        "path": "/workspaces/workspace/sandbox/AI-sandboxing",
+        "alias": "ai-sandboxing"
+      }
+    ]
+  }
+}
+```
+
+This allows the heuristic agent to read files from the AI-sandboxing repository while maintaining the prompt-only security model.
+
+### Phase 2: Working Directory Isolation (Lightweight Mode)
+
+**Goal**: Change the agent's working directory to a prepared directory structure that mirrors the target `/agent` layout, while still using the lightweight deployment approach.
+
+**Approach**: Before invoking the agent, heuristic-request prepares a temporary directory structure:
+
+```
+/workspaces/slopspaces/agent-workspaces/{invocation-id}/
+├── read/
+│   └── {alias} -> {actual-path}   # Symbolic links to read spaces
+└── write/
+    └── primary/                    # Actual directory for writes
+```
+
+**Implementation:**
+1. Create the workspace directory with the invocation ID
+2. Create `read/` and `write/primary/` subdirectories
+3. Create symbolic links in `read/` pointing to each read space path
+4. Change to this directory before invoking the agent
+5. Pass `--add-dir` for the workspace and each linked read space
+
+### Phase 3: Write Spaces for Agent-Worker
+
+**Goal**: Extend write spaces support to agent-worker for execute mode agents.
+
+**Approach**: Similar to read spaces, add `writeSpaces` configuration to DISPATCH.json/INSTRUCTION.json:
+
+```json
+{
+  "writeSpaces": {
+    "primary": "/workspaces/slopspaces/working/{work-unit-id}",
+    "additional": [
+      {
+        "path": "/workspaces/slopspaces/output/content",
+        "alias": "output"
+      }
+    ]
+  }
+}
+```
+
+### Phase 4: Container Mode
+
+**Goal**: Support full container isolation with mounted directories.
+
+**Approach**: When running in container mode:
+1. Mount read spaces read-only at `/agent/read/{alias}`
+2. Mount write spaces read-write at `/agent/write/{alias}`
+3. Set working directory to `/agent`
+4. No `--add-dir` flags needed; the mount points define the boundaries
+
+This phase requires container orchestration integration and is deferred until the lightweight mode is proven.
+
+### Design Decisions
+
+1. **Repository paths are absolute**: We use absolute paths to avoid ambiguity. The system running heuristic-request knows its filesystem layout.
+
+2. **No glob patterns initially**: Keeping it simple with explicit paths. Glob support can be added later if needed.
+
+3. **Aliases are optional but recommended**: They provide meaningful names in the agent's environment. When absent, a sanitized version of the path basename is used.
+
+4. **Read-only by construction in Phase 1**: Since heuristic-request uses `-p` (prompt mode), the read spaces are inherently read-only regardless of what `--add-dir` technically allows.
+
+5. **Symbolic links for lightweight mode**: Using symlinks allows us to present a clean directory structure to the agent without copying files, while maintaining the target environment layout.
+
+6. **Phased rollout**: Each phase builds on the previous, allowing us to validate the approach incrementally before adding complexity.
