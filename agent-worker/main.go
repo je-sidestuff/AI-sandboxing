@@ -3,13 +3,18 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/je-sidestuff/AI-sandboxing/pkg/filestory"
 )
 
 // Default paths
@@ -19,6 +24,12 @@ const (
 	defaultRecordsDir = "/workspaces/slopspaces/agent-records/"
 	checkInterval     = 10 * time.Second
 	defaultAgent      = "claude"
+
+	// Agent workspace - the restricted environment where the AI runs
+	// In host mode: files are copied in/out; AI runs as restricted user
+	// In container mode (future): directories are mounted; AI runs in container
+	agentWorkspaceRoot = "/agent/agent-worker"
+	defaultAgentUser   = "agent-worker"
 )
 
 // Work unit type constants
@@ -83,6 +94,16 @@ type WorkerRecord struct {
 	OutputPath string `json:"output_path"`
 }
 
+// AgentWorkspace represents the prepared workspace for an agent invocation
+// The workspace is located at /agent/agent-worker/ and contains:
+//   - read/default/  : Copy of work unit content (excluding .git)
+//   - write/primary/ : Agent's working directory where it can create/modify files
+type AgentWorkspace struct {
+	RootPath     string // /agent/agent-worker
+	ReadDefault  string // /agent/agent-worker/read/default
+	WritePrimary string // /agent/agent-worker/write/primary
+}
+
 // AgentWorker manages the work processing loop
 type AgentWorker struct {
 	workerID           string
@@ -95,6 +116,10 @@ type AgentWorker struct {
 	nextBackoffLog     time.Time
 	instructionEnabled bool
 	reportEnabled      bool
+	agentUser          string // OS user to run agent as (for host mode isolation)
+	agentUID           int    // UID of agent user (0 if not found/not using)
+	agentGID           int    // GID of agent user (0 if not found/not using)
+	fileStory          *filestory.Logger // File operation logger (nil if FILE_STORY_PATH not set)
 }
 
 // NewAgentWorker creates a new worker instance
@@ -132,8 +157,29 @@ func NewAgentWorker() *AgentWorker {
 		reportEnabled = false
 	}
 
+	// Agent user for host mode isolation
+	// Set AGENT_USER to override the default restricted user
+	// Set AGENT_USER="" to disable user isolation (run as current user)
+	agentUser := os.Getenv("AGENT_USER")
+	if agentUser == "" && os.Getenv("AGENT_USER") == "" {
+		// Not explicitly set, use default
+		agentUser = defaultAgentUser
+	}
+
+	var agentUID, agentGID int
+	if agentUser != "" {
+		if u, err := user.Lookup(agentUser); err == nil {
+			agentUID, _ = strconv.Atoi(u.Uid)
+			agentGID, _ = strconv.Atoi(u.Gid)
+		}
+		// If user not found, UID/GID remain 0 - handled at runtime
+	}
+
 	now := time.Now()
 	workerID := uuid.New().String()[:8]
+
+	// Initialize file story logger (uses FILE_STORY_PATH env var)
+	fileStoryLogger := filestory.NewLogger("agent-worker")
 
 	return &AgentWorker{
 		workerID:           workerID,
@@ -146,6 +192,10 @@ func NewAgentWorker() *AgentWorker {
 		nextBackoffLog:     now.Add(backoffLevels[0]),
 		instructionEnabled: instructionEnabled,
 		reportEnabled:      reportEnabled,
+		agentUser:          agentUser,
+		agentUID:           agentUID,
+		agentGID:           agentGID,
+		fileStory:          fileStoryLogger,
 	}
 }
 
@@ -162,6 +212,194 @@ func (w *AgentWorker) ensureDirectories() error {
 			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
 	}
+	return nil
+}
+
+// prepareWorkspace creates the agent workspace at /agent/agent-worker/
+// This clears any previous content and sets up fresh read/write spaces.
+// In host mode, the agent-worker binary (running as a privileged user) prepares this
+// workspace, then runs the AI as a restricted user that only has access to this directory.
+func (w *AgentWorker) prepareWorkspace(sourcePath string) (*AgentWorkspace, error) {
+	workspace := &AgentWorkspace{
+		RootPath:     agentWorkspaceRoot,
+		ReadDefault:  filepath.Join(agentWorkspaceRoot, "read", "default"),
+		WritePrimary: filepath.Join(agentWorkspaceRoot, "write", "primary"),
+	}
+
+	// Clean up any existing workspace content
+	// We clean contents rather than removing directories themselves, because:
+	// - The parent read/ and write/ directories have special permissions (1777)
+	// - This allows any user to clean up workspace files from previous runs
+	// - The AI may have created files owned by the agent-worker user
+	readDir := filepath.Join(agentWorkspaceRoot, "read")
+	writeDir := filepath.Join(agentWorkspaceRoot, "write")
+
+	if err := cleanDirContents(readDir); err != nil {
+		return nil, fmt.Errorf("failed to clean read space: %w", err)
+	}
+	if err := cleanDirContents(writeDir); err != nil {
+		return nil, fmt.Errorf("failed to clean write space: %w", err)
+	}
+
+	// Create workspace directories
+	if err := os.MkdirAll(workspace.ReadDefault, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create read/default: %w", err)
+	}
+	if err := os.MkdirAll(workspace.WritePrimary, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create write/primary: %w", err)
+	}
+
+	// Copy work unit content to read/default (excluding .git)
+	if err := copyDirContents(sourcePath, workspace.ReadDefault, true); err != nil {
+		return nil, fmt.Errorf("failed to copy work unit to read space: %w", err)
+	}
+
+	// Log the workspace preparation to file story
+	w.fileStory.LogTree(filestory.OpCopyIn, workspace.ReadDefault)
+
+	// Set ownership if running as root and agent user is configured
+	if os.Getuid() == 0 && w.agentUID != 0 {
+		// Recursively chown the workspace to the agent user
+		if err := chownRecursive(agentWorkspaceRoot, w.agentUID, w.agentGID); err != nil {
+			return nil, fmt.Errorf("failed to set workspace ownership: %w", err)
+		}
+	}
+
+	return workspace, nil
+}
+
+// cleanupWorkspace removes the workspace content after execution
+func (w *AgentWorker) cleanupWorkspace() {
+	// Clean up workspace content but keep the read/ and write/ directories
+	// (they have special permissions set up by 'make setup-dirs')
+	cleanDirContents(filepath.Join(agentWorkspaceRoot, "read"))
+	cleanDirContents(filepath.Join(agentWorkspaceRoot, "write"))
+}
+
+// cleanDirContents removes all contents of a directory but keeps the directory itself
+// This is used instead of os.RemoveAll because the parent directories have special
+// permissions (1777) that we want to preserve across runs
+func cleanDirContents(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // Directory doesn't exist, nothing to clean
+		}
+		return err
+	}
+
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("failed to remove %s: %w", path, err)
+		}
+	}
+
+	return nil
+}
+
+// copyDirContents copies directory contents from src to dst
+// If excludeGit is true, .git directories are skipped
+func copyDirContents(src, dst string, excludeGit bool) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		// Skip .git directories if requested
+		if excludeGit && entry.Name() == ".git" {
+			continue
+		}
+
+		if entry.IsDir() {
+			// Create directory and copy contents recursively
+			if err := os.MkdirAll(dstPath, 0755); err != nil {
+				return err
+			}
+			if err := copyDirContents(srcPath, dstPath, excludeGit); err != nil {
+				return err
+			}
+		} else {
+			// Copy file
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// copyFile copies a single file from src to dst
+func copyFile(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	srcInfo, err := srcFile.Stat()
+	if err != nil {
+		return err
+	}
+
+	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, srcInfo.Mode())
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	_, err = io.Copy(dstFile, srcFile)
+	return err
+}
+
+// chownRecursive changes ownership of a directory tree
+func chownRecursive(path string, uid, gid int) error {
+	return filepath.Walk(path, func(name string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		return os.Chown(name, uid, gid)
+	})
+}
+
+// copyWriteSpaceOutput copies files from write/primary back to the work unit folder
+// This extracts the agent's output after execution
+func (w *AgentWorker) copyWriteSpaceOutput(workspace *AgentWorkspace, destPath string) error {
+	// Check if write space exists and has content
+	entries, err := os.ReadDir(workspace.WritePrimary)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // No output to copy
+		}
+		return err
+	}
+
+	// Log the agent's output before copying
+	w.fileStory.LogTree(filestory.OpCopyOut, workspace.WritePrimary)
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(workspace.WritePrimary, entry.Name())
+		dstPath := filepath.Join(destPath, entry.Name())
+
+		if entry.IsDir() {
+			if err := os.MkdirAll(dstPath, 0755); err != nil {
+				return err
+			}
+			if err := copyDirContents(srcPath, dstPath, false); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -231,6 +469,11 @@ func (w *AgentWorker) checkForWorkUnits() ([]WorkUnit, error) {
 		return nil, err
 	}
 
+	// Log directory scan (uses abbreviation if >8 entries)
+	if len(entries) > 0 {
+		w.fileStory.LogTree(filestory.OpListDir, anyDir)
+	}
+
 	var workUnits []WorkUnit
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -295,6 +538,7 @@ func (w *AgentWorker) handleInstructionFiles(folderPath string) (*Instruction, e
 		if err != nil {
 			return nil, fmt.Errorf("failed to read INSTRUCTION.json: %w", err)
 		}
+		w.fileStory.LogFile(filestory.OpRead, instructionJSON)
 
 		var inst Instruction
 		if err := json.Unmarshal(data, &inst); err != nil {
@@ -316,6 +560,7 @@ func (w *AgentWorker) handleInstructionFiles(folderPath string) (*Instruction, e
 		if err != nil {
 			return nil, fmt.Errorf("failed to read INSTRUCTION.md: %w", err)
 		}
+		w.fileStory.LogFile(filestory.OpRead, instructionMD)
 
 		// Create the instruction struct
 		inst := Instruction{
@@ -369,6 +614,7 @@ func (w *AgentWorker) handleReportFiles(folderPath string) (*Report, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to read REPORT.json: %w", err)
 		}
+		w.fileStory.LogFile(filestory.OpRead, reportJSON)
 
 		var report Report
 		if err := json.Unmarshal(data, &report); err != nil {
@@ -391,6 +637,7 @@ func (w *AgentWorker) handleReportFiles(folderPath string) (*Report, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to read REPORT.md: %w", err)
 		}
+		w.fileStory.LogFile(filestory.OpRead, reportMD)
 
 		// Create the report struct with type "custom"
 		report := Report{
@@ -649,6 +896,8 @@ func (w *AgentWorker) getAgentFromReport(report *Report) string {
 }
 
 // executeAgent runs the agent against the work unit
+// It prepares the isolated workspace at /agent/agent-worker/, runs the AI as a
+// restricted user (in host mode), and copies output back to the work unit folder.
 func (w *AgentWorker) executeAgent(folderPath string, inst *Instruction, agent string) int {
 	// Find invoke-agent.sh
 	invokeScript := findInvokeScript()
@@ -657,20 +906,37 @@ func (w *AgentWorker) executeAgent(folderPath string, inst *Instruction, agent s
 		return 1
 	}
 
+	// Prepare the workspace - copy work unit to /agent/agent-worker/read/default/
+	workspace, err := w.prepareWorkspace(folderPath)
+	if err != nil {
+		log.Printf("Error: failed to prepare workspace: %v", err)
+		return 1
+	}
+	defer func() {
+		// Copy output from write space back to work unit folder
+		if copyErr := w.copyWriteSpaceOutput(workspace, folderPath); copyErr != nil {
+			log.Printf("Warning: failed to copy write space output: %v", copyErr)
+		}
+		// Clean up workspace
+		w.cleanupWorkspace()
+	}()
+
 	// Determine mode flag
 	modeFlag := "-p"
 	if inst.Mode == "execute" {
 		modeFlag = "-e"
 	}
 
-	// Write instruction to a temp file to avoid shell argument parsing issues
-	// (multi-line prompts with lines starting with "-" get misinterpreted as options)
-	promptFile := filepath.Join(folderPath, ".prompt.tmp")
+	// Write instruction to the write space so the agent can see it
+	promptFile := filepath.Join(workspace.WritePrimary, ".prompt.tmp")
 	if err := os.WriteFile(promptFile, []byte(inst.Instruction), 0644); err != nil {
 		log.Printf("Error: failed to write prompt file: %v", err)
 		return 1
 	}
-	defer os.Remove(promptFile)
+	// Set ownership of prompt file if running as root
+	if os.Getuid() == 0 && w.agentUID != 0 {
+		os.Chown(promptFile, w.agentUID, w.agentGID)
+	}
 
 	// Build command arguments using -f to read prompt from file
 	// When in execute mode, work units have already been approved through PR workflow
@@ -678,23 +944,47 @@ func (w *AgentWorker) executeAgent(folderPath string, inst *Instruction, agent s
 
 	// Create command
 	cmd := exec.Command(invokeScript, cmdArgs...)
-	cmd.Dir = folderPath
+
+	// Agent runs from write/primary/ - this is its working directory
+	cmd.Dir = workspace.WritePrimary
 
 	// Set AGENT_FULL_AUTO for execute mode since approval happened via PR workflow
 	fullAutoEnv := "0"
 	if inst.Mode == "execute" {
 		fullAutoEnv = "1"
 	}
+
+	// Build AGENT_ADD_DIRS to grant access to read space
+	// The agent gets read/default as an additional directory
+	addDirs := workspace.ReadDefault
+
 	cmd.Env = append(os.Environ(),
 		"AGENT_PRESET="+agent,
 		"AGENT_RECORDS_PATH="+w.recordsDir,
 		"AGENT_FULL_AUTO="+fullAutoEnv,
+		"AGENT_ADD_DIRS="+addDirs,
 	)
+
+	// In host mode, run as restricted user if configured and we're root
+	if os.Getuid() == 0 && w.agentUID != 0 {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Credential: &syscall.Credential{
+				Uid: uint32(w.agentUID),
+				Gid: uint32(w.agentGID),
+			},
+		}
+		log.Printf("[%s] Running agent as user %s (uid=%d)", w.workerID, w.agentUser, w.agentUID)
+	} else if w.agentUser != "" && w.agentUID == 0 {
+		// User configured but not found - warn but continue as current user
+		log.Printf("[%s] Warning: agent user '%s' not found, running as current user", w.workerID, w.agentUser)
+	}
+
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	log.Printf("[%s] Invoking agent %s with mode %s", w.workerID, agent, inst.Mode)
+	log.Printf("[%s] Workspace: %s", w.workerID, workspace.RootPath)
 
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -731,6 +1021,8 @@ You have access to agent records that document previous work sessions. These rec
 }
 
 // executeReportAgent runs the agent for a report work unit
+// It prepares the isolated workspace at /agent/agent-worker/, runs the AI as a
+// restricted user (in host mode), and copies output back to the work unit folder.
 func (w *AgentWorker) executeReportAgent(folderPath string, report *Report, agent string) int {
 	// Find invoke-agent.sh
 	invokeScript := findInvokeScript()
@@ -738,6 +1030,21 @@ func (w *AgentWorker) executeReportAgent(folderPath string, report *Report, agen
 		log.Printf("Error: invoke-agent.sh not found")
 		return 1
 	}
+
+	// Prepare the workspace - copy work unit to /agent/agent-worker/read/default/
+	workspace, err := w.prepareWorkspace(folderPath)
+	if err != nil {
+		log.Printf("Error: failed to prepare workspace: %v", err)
+		return 1
+	}
+	defer func() {
+		// Copy output from write space back to work unit folder
+		if copyErr := w.copyWriteSpaceOutput(workspace, folderPath); copyErr != nil {
+			log.Printf("Warning: failed to copy write space output: %v", copyErr)
+		}
+		// Clean up workspace
+		w.cleanupWorkspace()
+	}()
 
 	// Build the instruction based on report type
 	var instruction string
@@ -765,31 +1072,56 @@ func (w *AgentWorker) executeReportAgent(folderPath string, report *Report, agen
 	// Reports always use execute mode to allow file creation
 	modeFlag := "-e"
 
-	// Write instruction to a temp file to avoid shell argument parsing issues
-	// (multi-line prompts with lines starting with "-" get misinterpreted as options)
-	promptFile := filepath.Join(folderPath, ".prompt.tmp")
+	// Write instruction to the write space so the agent can see it
+	promptFile := filepath.Join(workspace.WritePrimary, ".prompt.tmp")
 	if err := os.WriteFile(promptFile, []byte(instruction), 0644); err != nil {
 		log.Printf("Error: failed to write prompt file: %v", err)
 		return 1
 	}
-	defer os.Remove(promptFile)
+	// Set ownership of prompt file if running as root
+	if os.Getuid() == 0 && w.agentUID != 0 {
+		os.Chown(promptFile, w.agentUID, w.agentGID)
+	}
 
 	// Build command arguments using -f to read prompt from file
 	cmdArgs := []string{modeFlag, "-a", agent, "-f", promptFile}
 
 	// Create command
 	cmd := exec.Command(invokeScript, cmdArgs...)
-	cmd.Dir = folderPath
+
+	// Agent runs from write/primary/ - this is its working directory
+	cmd.Dir = workspace.WritePrimary
+
+	// Build AGENT_ADD_DIRS to grant access to read space
+	addDirs := workspace.ReadDefault
+
 	cmd.Env = append(os.Environ(),
 		"AGENT_PRESET="+agent,
 		"AGENT_RECORDS_PATH="+w.recordsDir,
 		"REPORT_TYPE="+report.Type,
+		"AGENT_ADD_DIRS="+addDirs,
 	)
+
+	// In host mode, run as restricted user if configured and we're root
+	if os.Getuid() == 0 && w.agentUID != 0 {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Credential: &syscall.Credential{
+				Uid: uint32(w.agentUID),
+				Gid: uint32(w.agentGID),
+			},
+		}
+		log.Printf("[%s] Running agent as user %s (uid=%d)", w.workerID, w.agentUser, w.agentUID)
+	} else if w.agentUser != "" && w.agentUID == 0 {
+		// User configured but not found - warn but continue as current user
+		log.Printf("[%s] Warning: agent user '%s' not found, running as current user", w.workerID, w.agentUser)
+	}
+
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	log.Printf("[%s] Invoking agent %s for %s report", w.workerID, agent, report.Type)
+	log.Printf("[%s] Workspace: %s", w.workerID, workspace.RootPath)
 
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -872,6 +1204,9 @@ func (w *AgentWorker) run() {
 	log.Printf("[%s] Output records: %s", w.workerID, filepath.Join(w.outputDir, "records"))
 	log.Printf("[%s] Worker records: %s", w.workerID, filepath.Join(w.recordsDir, "worker"))
 	log.Printf("[%s] Default agent: %s", w.workerID, w.currentAgent)
+	if w.fileStory.Enabled() {
+		log.Printf("[%s] File story logging: %s", w.workerID, os.Getenv("FILE_STORY_PATH"))
+	}
 
 	// Log enabled modes
 	var enabledModes []string

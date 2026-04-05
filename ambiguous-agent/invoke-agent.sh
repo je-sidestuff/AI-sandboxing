@@ -84,6 +84,7 @@ Environment:
   AGENT_PRESET        Default agent preset (overrides built-in default)
   AGENT_QUIET_CONTEXT Set to 1 to use minimal context prefix (path only)
   AGENT_FULL_AUTO     Set to 1 for pre-approved execution (skips permission prompts)
+  AGENT_ADD_DIRS      Colon-separated list of additional directories to add via --add-dir
 
 EOF
     exit 1
@@ -207,6 +208,15 @@ build_agent_command() {
         args+=("$add_dir_flag" "$records_path")
         if [[ "$mode" == "-e" ]]; then
             args+=("$add_dir_flag" "$call_pwd")
+        fi
+        # Add any additional directories from AGENT_ADD_DIRS (colon-separated)
+        if [[ -n "${AGENT_ADD_DIRS:-}" ]]; then
+            IFS=':' read -ra extra_dirs <<< "$AGENT_ADD_DIRS"
+            for extra_dir in "${extra_dirs[@]}"; do
+                if [[ -n "$extra_dir" && -d "$extra_dir" ]]; then
+                    args+=("$add_dir_flag" "$extra_dir")
+                fi
+            done
         fi
     fi
 

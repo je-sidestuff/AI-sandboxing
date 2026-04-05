@@ -4,15 +4,20 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/je-sidestuff/AI-sandboxing/pkg/filestory"
 )
 
 // Default paths
@@ -22,6 +27,12 @@ const (
 	defaultRecordsDir   = "/workspaces/slopspaces/agent-records/"
 	checkInterval       = 10 * time.Second
 	defaultAgent        = "claude"
+
+	// Agent workspace - the restricted environment where the AI runs
+	// In host mode: files are copied in/out; AI runs as restricted user
+	// In container mode (future): directories are mounted; AI runs in container
+	agentWorkspaceRoot = "/agent/heuristic-request"
+	defaultAgentUser   = "heuristic-request"
 )
 
 // Available agent presets (must match invoke-agent.sh presets)
@@ -56,6 +67,16 @@ type ExtractedFile struct {
 	Content  string
 }
 
+// AgentWorkspace represents the prepared workspace for an agent invocation
+// The workspace is located at /agent/heuristic-request/ and contains:
+//   - read/default/  : Copy of work unit content (excluding .git)
+//   - write/primary/ : Agent's working directory where it can create/modify files
+type AgentWorkspace struct {
+	RootPath     string // /agent/heuristic-request
+	ReadDefault  string // /agent/heuristic-request/read/default
+	WritePrimary string // /agent/heuristic-request/write/primary
+}
+
 // HeuristicWatcher manages the heuristic watch loop
 type HeuristicWatcher struct {
 	watcherID      string
@@ -66,6 +87,10 @@ type HeuristicWatcher struct {
 	lastActivity   time.Time
 	backoffIndex   int
 	nextBackoffLog time.Time
+	agentUser      string // OS user to run agent as (for host mode isolation)
+	agentUID       int    // UID of agent user (0 if not found/not using)
+	agentGID       int    // GID of agent user (0 if not found/not using)
+	fileStory      *filestory.Logger // File operation logger (nil if FILE_STORY_PATH not set)
 }
 
 // NewHeuristicWatcher creates a new watcher instance
@@ -90,8 +115,29 @@ func NewHeuristicWatcher() *HeuristicWatcher {
 		currentAgent = defaultAgent
 	}
 
+	// Agent user for host mode isolation
+	// Set AGENT_USER to override the default restricted user
+	// Set AGENT_USER="" to disable user isolation (run as current user)
+	agentUser := os.Getenv("AGENT_USER")
+	if agentUser == "" && os.Getenv("AGENT_USER") == "" {
+		// Not explicitly set, use default
+		agentUser = defaultAgentUser
+	}
+
+	var agentUID, agentGID int
+	if agentUser != "" {
+		if u, err := user.Lookup(agentUser); err == nil {
+			agentUID, _ = strconv.Atoi(u.Uid)
+			agentGID, _ = strconv.Atoi(u.Gid)
+		}
+		// If user not found, UID/GID remain 0 - handled at runtime
+	}
+
 	now := time.Now()
 	watcherID := uuid.New().String()[:8]
+
+	// Initialize file story logger (uses FILE_STORY_PATH env var)
+	fileStoryLogger := filestory.NewLogger("heuristic-request")
 
 	return &HeuristicWatcher{
 		watcherID:      watcherID,
@@ -102,6 +148,10 @@ func NewHeuristicWatcher() *HeuristicWatcher {
 		lastActivity:   now,
 		backoffIndex:   0,
 		nextBackoffLog: now.Add(backoffLevels[0]),
+		agentUser:      agentUser,
+		agentUID:       agentUID,
+		agentGID:       agentGID,
+		fileStory:      fileStoryLogger,
 	}
 }
 
@@ -118,6 +168,194 @@ func (w *HeuristicWatcher) ensureDirectories() error {
 			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
 	}
+	return nil
+}
+
+// prepareWorkspace creates the agent workspace at /agent/heuristic-request/
+// This clears any previous content and sets up fresh read/write spaces.
+// In host mode, the heuristic-request binary (running as a privileged user) prepares this
+// workspace, then runs the AI as a restricted user that only has access to this directory.
+func (w *HeuristicWatcher) prepareWorkspace(sourcePath string) (*AgentWorkspace, error) {
+	workspace := &AgentWorkspace{
+		RootPath:     agentWorkspaceRoot,
+		ReadDefault:  filepath.Join(agentWorkspaceRoot, "read", "default"),
+		WritePrimary: filepath.Join(agentWorkspaceRoot, "write", "primary"),
+	}
+
+	// Clean up any existing workspace content
+	// We clean contents rather than removing directories themselves, because:
+	// - The parent read/ and write/ directories have special permissions (1777)
+	// - This allows any user to clean up workspace files from previous runs
+	// - The AI may have created files owned by the heuristic-request user
+	readDir := filepath.Join(agentWorkspaceRoot, "read")
+	writeDir := filepath.Join(agentWorkspaceRoot, "write")
+
+	if err := cleanDirContents(readDir); err != nil {
+		return nil, fmt.Errorf("failed to clean read space: %w", err)
+	}
+	if err := cleanDirContents(writeDir); err != nil {
+		return nil, fmt.Errorf("failed to clean write space: %w", err)
+	}
+
+	// Create workspace directories
+	if err := os.MkdirAll(workspace.ReadDefault, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create read/default: %w", err)
+	}
+	if err := os.MkdirAll(workspace.WritePrimary, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create write/primary: %w", err)
+	}
+
+	// Copy work unit content to read/default (excluding .git)
+	if err := copyDirContents(sourcePath, workspace.ReadDefault, true); err != nil {
+		return nil, fmt.Errorf("failed to copy work unit to read space: %w", err)
+	}
+
+	// Log the workspace preparation to file story
+	w.fileStory.LogTree(filestory.OpCopyIn, workspace.ReadDefault)
+
+	// Set ownership if running as root and agent user is configured
+	if os.Getuid() == 0 && w.agentUID != 0 {
+		// Recursively chown the workspace to the agent user
+		if err := chownRecursive(agentWorkspaceRoot, w.agentUID, w.agentGID); err != nil {
+			return nil, fmt.Errorf("failed to set workspace ownership: %w", err)
+		}
+	}
+
+	return workspace, nil
+}
+
+// cleanupWorkspace removes the workspace content after execution
+func (w *HeuristicWatcher) cleanupWorkspace() {
+	// Clean up workspace content but keep the read/ and write/ directories
+	// (they have special permissions set up by 'make setup-dirs')
+	cleanDirContents(filepath.Join(agentWorkspaceRoot, "read"))
+	cleanDirContents(filepath.Join(agentWorkspaceRoot, "write"))
+}
+
+// cleanDirContents removes all contents of a directory but keeps the directory itself
+// This is used instead of os.RemoveAll because the parent directories have special
+// permissions (1777) that we want to preserve across runs
+func cleanDirContents(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // Directory doesn't exist, nothing to clean
+		}
+		return err
+	}
+
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("failed to remove %s: %w", path, err)
+		}
+	}
+
+	return nil
+}
+
+// copyDirContents copies directory contents from src to dst
+// If excludeGit is true, .git directories are skipped
+func copyDirContents(src, dst string, excludeGit bool) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		// Skip .git directories if requested
+		if excludeGit && entry.Name() == ".git" {
+			continue
+		}
+
+		if entry.IsDir() {
+			// Create directory and copy contents recursively
+			if err := os.MkdirAll(dstPath, 0755); err != nil {
+				return err
+			}
+			if err := copyDirContents(srcPath, dstPath, excludeGit); err != nil {
+				return err
+			}
+		} else {
+			// Copy file
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// copyFile copies a single file from src to dst
+func copyFile(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	srcInfo, err := srcFile.Stat()
+	if err != nil {
+		return err
+	}
+
+	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, srcInfo.Mode())
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	_, err = io.Copy(dstFile, srcFile)
+	return err
+}
+
+// chownRecursive changes ownership of a directory tree
+func chownRecursive(path string, uid, gid int) error {
+	return filepath.Walk(path, func(name string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		return os.Chown(name, uid, gid)
+	})
+}
+
+// copyWriteSpaceOutput copies files from write/primary back to the destination folder
+// This extracts the agent's output after execution
+func (w *HeuristicWatcher) copyWriteSpaceOutput(workspace *AgentWorkspace, destPath string) error {
+	// Check if write space exists and has content
+	entries, err := os.ReadDir(workspace.WritePrimary)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // No output to copy
+		}
+		return err
+	}
+
+	// Log the agent's output before copying
+	w.fileStory.LogTree(filestory.OpCopyOut, workspace.WritePrimary)
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(workspace.WritePrimary, entry.Name())
+		dstPath := filepath.Join(destPath, entry.Name())
+
+		if entry.IsDir() {
+			if err := os.MkdirAll(dstPath, 0755); err != nil {
+				return err
+			}
+			if err := copyDirContents(srcPath, dstPath, false); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -187,6 +425,11 @@ func (w *HeuristicWatcher) checkForHeuristicUnits() ([]HeuristicUnit, error) {
 		return nil, err
 	}
 
+	// Log directory scan (uses abbreviation if >8 entries)
+	if len(entries) > 0 {
+		w.fileStory.LogTree(filestory.OpListDir, pendingDir)
+	}
+
 	var units []HeuristicUnit
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -206,6 +449,7 @@ func (w *HeuristicWatcher) checkForHeuristicUnits() ([]HeuristicUnit, error) {
 					log.Printf("[%s] Warning: failed to read HEURISTIC.json in %s: %v", w.watcherID, entry.Name(), err)
 					continue
 				}
+				w.fileStory.LogFile(filestory.OpRead, heuristicJSON)
 
 				var data HeuristicData
 				if err := json.Unmarshal(content, &data); err != nil {
@@ -231,6 +475,7 @@ func (w *HeuristicWatcher) checkForHeuristicUnits() ([]HeuristicUnit, error) {
 					log.Printf("[%s] Warning: failed to read HEURISTIC.md in %s: %v", w.watcherID, entry.Name(), err)
 					continue
 				}
+				w.fileStory.LogFile(filestory.OpRead, heuristicMD)
 
 				units = append(units, HeuristicUnit{
 					Path:       heuristicMD,
@@ -437,6 +682,8 @@ func (w *HeuristicWatcher) processHeuristicUnit(unit HeuristicUnit) error {
 			log.Printf("[%s] Warning: failed to write %s: %v", w.watcherID, file.Filename, err)
 		} else {
 			log.Printf("[%s] Extracted %s to %s", w.watcherID, file.Filename, requestFolder)
+			// Log the extracted file to file story
+			w.fileStory.LogFile(filestory.OpCreate, filePath)
 		}
 	}
 
@@ -444,6 +691,8 @@ func (w *HeuristicWatcher) processHeuristicUnit(unit HeuristicUnit) error {
 	heuristicCopy := filepath.Join(requestFolder, "HEURISTIC_SOURCE.md")
 	if err := os.WriteFile(heuristicCopy, []byte(unit.Content), 0644); err != nil {
 		log.Printf("[%s] Warning: failed to copy heuristic source: %v", w.watcherID, err)
+	} else {
+		w.fileStory.LogFile(filestory.OpCreate, heuristicCopy)
 	}
 
 	endTime := time.Now()
@@ -474,6 +723,8 @@ func (w *HeuristicWatcher) processHeuristicUnit(unit HeuristicUnit) error {
 }
 
 // executeAgent runs the agent in prompt-only mode and captures output
+// It prepares the isolated workspace at /agent/heuristic-request/, runs the AI as a
+// restricted user (in host mode), and copies output back to the work unit folder.
 func (w *HeuristicWatcher) executeAgent(folderPath, prompt, model string) (string, int, error) {
 	// Find invoke-agent.sh
 	invokeScript := findInvokeScript()
@@ -486,29 +737,72 @@ func (w *HeuristicWatcher) executeAgent(folderPath, prompt, model string) (strin
 		agentToUse = model
 	}
 
-	// Write prompt to a temp file
-	promptFile := filepath.Join(folderPath, ".prompt.tmp")
+	// Prepare the workspace - copy work unit to /agent/heuristic-request/read/default/
+	workspace, err := w.prepareWorkspace(folderPath)
+	if err != nil {
+		return "", 1, fmt.Errorf("failed to prepare workspace: %w", err)
+	}
+	defer func() {
+		// Copy output from write space back to work unit folder
+		if copyErr := w.copyWriteSpaceOutput(workspace, folderPath); copyErr != nil {
+			log.Printf("[%s] Warning: failed to copy write space output: %v", w.watcherID, copyErr)
+		}
+		// Clean up workspace
+		w.cleanupWorkspace()
+	}()
+
+	// Write prompt to the write space so the agent can see it
+	promptFile := filepath.Join(workspace.WritePrimary, ".prompt.tmp")
 	if err := os.WriteFile(promptFile, []byte(prompt), 0644); err != nil {
 		return "", 1, fmt.Errorf("failed to write prompt file: %w", err)
 	}
-	defer os.Remove(promptFile)
+	// Set ownership of prompt file if running as root
+	if os.Getuid() == 0 && w.agentUID != 0 {
+		os.Chown(promptFile, w.agentUID, w.agentGID)
+	}
 
 	// Build command arguments - ALWAYS use prompt mode (-p)
 	cmdArgs := []string{"-p", "-a", agentToUse, "-f", promptFile}
 
 	// Create command
 	cmd := exec.Command(invokeScript, cmdArgs...)
-	cmd.Dir = folderPath
+
+	// Agent runs from write/primary/ - this is its working directory
+	cmd.Dir = workspace.WritePrimary
+
+	// Build AGENT_ADD_DIRS to grant access to read space
+	// The agent gets read/default as an additional directory
+	addDirs := workspace.ReadDefault
+
 	cmd.Env = append(os.Environ(),
 		"AGENT_PRESET="+agentToUse,
 		"AGENT_RECORDS_PATH="+w.recordsDir,
+		"AGENT_ADD_DIRS="+addDirs,
 	)
 
-	// Capture output
-	outputFile := filepath.Join(folderPath, "agent_output.txt")
+	// In host mode, run as restricted user if configured and we're root
+	if os.Getuid() == 0 && w.agentUID != 0 {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Credential: &syscall.Credential{
+				Uid: uint32(w.agentUID),
+				Gid: uint32(w.agentGID),
+			},
+		}
+		log.Printf("[%s] Running agent as user %s (uid=%d)", w.watcherID, w.agentUser, w.agentUID)
+	} else if w.agentUser != "" && w.agentUID == 0 {
+		// User configured but not found - warn but continue as current user
+		log.Printf("[%s] Warning: agent user '%s' not found, running as current user", w.watcherID, w.agentUser)
+	}
+
+	// Capture output - write to the workspace write space
+	outputFile := filepath.Join(workspace.WritePrimary, "agent_output.txt")
 	outFile, err := os.Create(outputFile)
 	if err != nil {
 		return "", 1, fmt.Errorf("failed to create output file: %w", err)
+	}
+	// Set ownership of output file if running as root
+	if os.Getuid() == 0 && w.agentUID != 0 {
+		os.Chown(outputFile, w.agentUID, w.agentGID)
 	}
 	defer outFile.Close()
 
@@ -518,6 +812,7 @@ func (w *HeuristicWatcher) executeAgent(folderPath, prompt, model string) (strin
 	cmd.Stdin = os.Stdin
 
 	log.Printf("[%s] Invoking agent %s in prompt-only mode", w.watcherID, agentToUse)
+	log.Printf("[%s] Workspace: %s", w.watcherID, workspace.RootPath)
 
 	exitCode := 0
 	if err := cmd.Run(); err != nil {
@@ -612,6 +907,9 @@ func (w *HeuristicWatcher) run() {
 	log.Printf("[%s] Requests: %s", w.watcherID, w.requestDir)
 	log.Printf("[%s] Records: %s", w.watcherID, filepath.Join(w.recordsDir, "heuristic"))
 	log.Printf("[%s] Default agent: %s", w.watcherID, w.currentAgent)
+	if w.fileStory.Enabled() {
+		log.Printf("[%s] File story logging: %s", w.watcherID, os.Getenv("FILE_STORY_PATH"))
+	}
 
 	for {
 		units, err := w.checkForHeuristicUnits()

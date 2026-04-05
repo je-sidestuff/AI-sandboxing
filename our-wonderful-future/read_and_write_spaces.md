@@ -44,11 +44,23 @@ This means the specific directories mentioned in this document are *defaults*, n
 ### Agent-Worker (`agent-worker/main.go`)
 
 - Runs agents in **prompt** (`-p`) or **execute** (`-e`) mode
-- Current working directory: set to the work unit folder
-- Default paths:
+- **Implements read/write spaces model** with host-mode user isolation
+- Agent workspace: `/agent/agent-worker/` (fixed location, cleared per invocation)
+- Agent working directory: `/agent/agent-worker/write/primary/`
+- Default paths for work units:
   - `INPUT_DIR`: `/workspaces/slopspaces/input/`
   - `OUTPUT_DIR`: `/workspaces/slopspaces/output/`
   - `RECORDS_DIR`: `/workspaces/slopspaces/agent-records/`
+- Workspace structure (at `/agent/agent-worker/`):
+  ```
+  /agent/agent-worker/
+  ├── read/
+  │   └── default/    # Copy of work unit content (no .git)
+  └── write/
+      └── primary/    # Agent's working directory
+  ```
+- **Host mode isolation**: AI runs as restricted `agent-worker` OS user
+- Makefile targets: `make setup` (create user/dirs), `make verify-setup`, `make run`
 
 ### invoke-agent.sh (`ambiguous-agent/invoke-agent.sh`)
 
@@ -273,15 +285,51 @@ Glob pattern support (e.g., /workspaces/slopspaces/**) is not needed up-front an
 
 ---
 
-## Next Steps
+## Current Implementation Status
 
-1. Update `heuristic-request/main.go` to:
-   - Change to a prepared working directory before invoking the agent
-   - Pass appropriate `--add-dir` flags for read access (heuristic-request is already read-only via `-p`)
+### Agent-Worker: IMPLEMENTED
 
-2. Update `agent-worker/main.go` similarly for execute mode agents
+The `agent-worker` component now implements the full read/write spaces model with host-mode user isolation:
 
-3. Document the final read/write space model
+**Workspace Location**: `/agent/agent-worker/`
+- This is a fixed location at the root of the filesystem
+- One agent per host, so no invocation-specific subdirectories needed
+- Content is cleared and repopulated for each invocation
+
+**Directory Structure**:
+```
+/agent/agent-worker/
+├── read/
+│   └── default/    # Copy of work unit content (minus .git)
+└── write/
+    └── primary/    # Agent's working directory
+```
+
+**File Brokering (Host Mode)**:
+1. Before invocation: Copy work unit content → `/agent/agent-worker/read/default/`
+2. Agent runs with `/agent/agent-worker/write/primary/` as working directory
+3. After invocation: Copy `/agent/agent-worker/write/primary/` content → work unit folder
+4. Cleanup: Remove read and write directories
+
+**User Isolation (Host Mode)**:
+- The `agent-worker` binary runs as a privileged user (or root)
+- The AI itself runs as the restricted `agent-worker` OS user
+- The restricted user only has filesystem access to `/agent/agent-worker/`
+- Makefile targets manage user creation: `make setup`, `make check-user`
+
+**Environment Variables**:
+- `AGENT_USER`: Override the restricted user (set to empty to disable isolation)
+- `AGENT_ADD_DIRS`: Read spaces passed to the AI via invoke-agent.sh
+
+### Heuristic-Request: Pending
+
+Heuristic-request dispatches work through agent-worker, so it inherits the read/write space model. Future work may add direct support for heuristic-specific read spaces.
+
+### Next Steps
+
+1. Test the agent-worker implementation end-to-end
+2. Apply similar patterns to heuristic-request if needed
+3. Implement container mode (mount-based isolation) as an alternative to host mode
 
 ---
 
@@ -301,12 +349,22 @@ if [[ -n "$add_dir_flag" ]]; then
     if [[ "$mode" == "-e" ]]; then
         args+=("$add_dir_flag" "$call_pwd")
     fi
+    # Add any additional directories from AGENT_ADD_DIRS (colon-separated)
+    if [[ -n "${AGENT_ADD_DIRS:-}" ]]; then
+        IFS=':' read -ra extra_dirs <<< "$AGENT_ADD_DIRS"
+        for extra_dir in "${extra_dirs[@]}"; do
+            if [[ -n "$extra_dir" && -d "$extra_dir" ]]; then
+                args+=("$add_dir_flag" "$extra_dir")
+            fi
+        done
+    fi
 fi
 ```
 
 This means:
 - In prompt mode: agent has records path added (but can't write anyway)
 - In execute mode: agent has records path AND current directory added
+- Additional directories can be passed via `AGENT_ADD_DIRS` environment variable (colon-separated list)
 
 ---
 
@@ -319,29 +377,35 @@ This section documents how we'll proceed with implementing read/write spaces sup
 When a heuristic agent runs in a fully isolated mode, the agent's environment follows this structure:
 
 ```
-/agent/                    # Working directory for the agent
-├── read/                  # Read space(s) mounted here
-│   ├── ai-sandboxing/     # Example: repository checkout
-│   └── reference/         # Example: reference materials
-└── write/                 # Write space(s) mounted here
-    └── primary/           # Always present; the main write space
+/agent/<type>/                    # Working directory for the agent (e.g., /agent/heuristic-request/)
+├── read/                         # Read space(s) mounted here
+│   ├── default/                  # Example: AI-sandboxing checkout copy
+│   └── reference/                # Example: reference materials
+└── write/                        # Write space(s) mounted here (for writing agents only, ie: worker)
+    └── primary/                  # Always present if parent dir is; the main write space
 ```
 
 **Key principles:**
-- The agent's working directory is `/agent`
-- From the agent's perspective, only `/agent` and its contents are visible
-- Read spaces appear under `/agent/read/` with their alias as the subdirectory name
-- Write spaces appear under `/agent/write/`, with `primary` always present
+- The agent's working directory is `/agent/<type>/` (e.g., `/agent/heuristic-request/` or `/agent/agent-worker/`)
+- From the agent's perspective, only `/agent/<type>/` and its contents are visible
+- Read spaces appear under `/agent/<type>/read/` with their alias as the subdirectory name
+- Write spaces may appear under `/agent/<type>/write/`, with `primary` always present
+
+The `<type>` component (e.g., `heuristic-request`, `agent-worker`) enables OS-level user/group permissions for isolation. Each agent type runs as a dedicated user, and since requests run serially within each type, this provides filesystem-level security boundaries without full containerization.
 
 **Deployment modes:**
-1. **Container mode**: Mount directories into the container filesystem at `/agent/read` and `/agent/write`
-2. **Lightweight mode**: Use `--add-dir` flags with symbolic links or direct paths, achieving similar isolation without full containerization
+1. **Container mode**: Mount directories into the container filesystem at `/agent/<type>/read` and `/agent/<type>/write`
+2. **Lightweight mode**: Use OS-level user/group permissions to ensure compromised agent/model code cannot violate trust. Each agent type runs as a dedicated user (e.g., `heuristic-request`, `agent-worker`), with filesystem permissions restricting access. Directories outside the agent's scope are made invisible to the running user. Use `--add-dir` flags with symbolic links or direct paths to grant explicit access
 
 ### Phase 1: Heuristic-Request Read Spaces (Lightweight Mode)
 
 **Goal**: Enable heuristic-request agents to see new repository checkouts (starting with the AI-sandboxing repository itself), using the lightweight deployment approach.
 
-**Approach**: Extend HEURISTIC.json with an optional `readSpaces` field that can designate additional directories for the agent to access. When absent, the current behavior applies unchanged.
+**Approach**: Extend HEURISTIC.json with an optional `readSpaces` field that can designate additional directories for the agent to access. When absent, the 'default' readspace is attached.
+
+We want to make sure even the 'direct launchers' (like 'make run') act as a new restricted user we've created.
+
+We also want to create the concept of creating readspaces and assigning readspaces up-front. If we do not explicitly perform this process then the AI-sandboxing repository gets added to a 'default' readspace with 'copy' mode so that an ephemeral copy with the '.git' removed is dispatched.
 
 #### HEURISTIC.json Extension
 
@@ -349,37 +413,25 @@ When a heuristic agent runs in a fully isolated mode, the agent's environment fo
 {
   "heuristic": "...",
   "prompt": "...",
-  "readSpaces": {
-    "repositories": [
-      {
-        "path": "/workspaces/workspace/sandbox/AI-sandboxing",
-        "alias": "ai-sandboxing"
-      }
-    ]
-  }
+  "useReadSpaces": ["default"], // This is also the default
+  "createReadSpaces" : {}
 }
 ```
 
 **Field semantics:**
-- `readSpaces` (optional): Object containing read space configuration
-- `readSpaces.repositories` (optional): Array of repository paths to include as read spaces
-  - `path`: Absolute path to the repository
-  - `alias` (optional): A friendly name for the repository (used in agent context)
+- `useReadSpaces` (optional): Array of read space handles to attach. Defaults to `["default"]`
+- `createReadSpaces` (optional): Object mapping read space names to their creation configuration (semantics defined later)
 
 #### Backward Compatibility
 
-When `readSpaces` is absent or empty:
-- Heuristic-request behaves exactly as it does today
-- No additional `--add-dir` flags are passed
-- No changes to working directory handling
+Because the default readspace is auto-attached when configuration is absent, things are FUNCITONALLY backwards compatible.
 
-This follows our auto-create paradigm: the feature exists when configured, but the absence of configuration yields default behavior identical to current functionality.
+This is better than maintaining explicitly identical behaviour.
 
 #### Implementation Changes to heuristic-request/main.go
 
-1. **Parse readSpaces from HEURISTIC.json**: Extend the heuristic parsing to recognize the `readSpaces` field
-2. **Pass additional --add-dir flags**: For each repository in `readSpaces.repositories`, add the corresponding `--add-dir` flag when invoking the agent
-3. **No working directory changes yet**: Phase 1 keeps the current working directory behavior; we only add read access to additional paths
+1. **Parse readSpaces from HEURISTIC.json**: Extend the heuristic parsing to recognize the `useReadSpaces` field
+1. **Copy the read-space directories into place**: Bring the readspace into place with a copy-and-remove-git.
 
 #### First Use-Case: AI-sandboxing Repository
 
@@ -388,15 +440,8 @@ The immediate goal is a heuristic that can examine the AI-sandboxing repository.
 ```json
 {
   "heuristic": "review-codebase",
-  "prompt": "Review the AI-sandboxing codebase structure and provide observations.",
-  "readSpaces": {
-    "repositories": [
-      {
-        "path": "/workspaces/workspace/sandbox/AI-sandboxing",
-        "alias": "ai-sandboxing"
-      }
-    ]
-  }
+  "prompt": "Send a task to the downstream agent based on the structure you can see in AI-sanboxing.",
+  "useReadSpaces": ["default"]
 }
 ```
 
@@ -404,53 +449,40 @@ This allows the heuristic agent to read files from the AI-sandboxing repository 
 
 ### Phase 2: Working Directory Isolation (Lightweight Mode)
 
-**Goal**: Change the agent's working directory to a prepared directory structure that mirrors the target `/agent` layout, while still using the lightweight deployment approach.
+**Goal**: Change the agent's working directory to a prepared directory structure that mirrors the target `/agent/<type>/` layout, while still using the lightweight deployment approach.
 
-**Approach**: Before invoking the agent, heuristic-request prepares a temporary directory structure:
+**Approach**: Before invoking the agent, heuristic-request prepares a temporary directory structure that mirrors the target `/agent/<type>/` layout:
 
 ```
-/workspaces/slopspaces/agent-workspaces/{invocation-id}/
+/workspaces/slopspaces/agent-workspaces/heuristic-request/{invocation-id}/
 ├── read/
-│   └── {alias} -> {actual-path}   # Symbolic links to read spaces
+│   └── {alias} -> {actual-path}   # Prepared and then copied into the correct path
 └── write/
-    └── primary/                    # Actual directory for writes
+    └── primary/                    # Actual directory for writes (for agent-worker)
 ```
 
 **Implementation:**
-1. Create the workspace directory with the invocation ID
-2. Create `read/` and `write/primary/` subdirectories
+1. Create the workspace directory with the invocation ID under the appropriate type directory
+2. Create `read/` subdirectory right away. Create `write/primary/` subdirectory later when we implement agent-worker
 3. Create symbolic links in `read/` pointing to each read space path
 4. Change to this directory before invoking the agent
 5. Pass `--add-dir` for the workspace and each linked read space
+6. Run the agent as a dedicated OS user (e.g., `heuristic-request` user) with appropriate group permissions
 
 ### Phase 3: Write Spaces for Agent-Worker
 
 **Goal**: Extend write spaces support to agent-worker for execute mode agents.
 
-**Approach**: Similar to read spaces, add `writeSpaces` configuration to DISPATCH.json/INSTRUCTION.json:
-
-```json
-{
-  "writeSpaces": {
-    "primary": "/workspaces/slopspaces/working/{work-unit-id}",
-    "additional": [
-      {
-        "path": "/workspaces/slopspaces/output/content",
-        "alias": "output"
-      }
-    ]
-  }
-}
-```
+**Approach**: Similar to read spaces, add `writeSpaces` configuration to work-unit files. We can consider this schema later.
 
 ### Phase 4: Container Mode
 
 **Goal**: Support full container isolation with mounted directories.
 
 **Approach**: When running in container mode:
-1. Mount read spaces read-only at `/agent/read/{alias}`
-2. Mount write spaces read-write at `/agent/write/{alias}`
-3. Set working directory to `/agent`
+1. Mount read spaces read-only at `/agent/<type>/read/{alias}`
+2. Mount write spaces read-write at `/agent/<type>/write/{alias}`
+3. Set working directory to `/agent/<type>/`
 4. No `--add-dir` flags needed; the mount points define the boundaries
 
 This phase requires container orchestration integration and is deferred until the lightweight mode is proven.
@@ -465,6 +497,8 @@ This phase requires container orchestration integration and is deferred until th
 
 4. **Read-only by construction in Phase 1**: Since heuristic-request uses `-p` (prompt mode), the read spaces are inherently read-only regardless of what `--add-dir` technically allows.
 
-5. **Symbolic links for lightweight mode**: Using symlinks allows us to present a clean directory structure to the agent without copying files, while maintaining the target environment layout.
+5. **Copies first for lightweight mode**: Disposable copies are safe and simple, they need to have no .git present.
 
 6. **Phased rollout**: Each phase builds on the previous, allowing us to validate the approach incrementally before adding complexity.
+
+7. **Makefile target for user/group setup**: The Makefile includes a target to ensure the presence of (and create if needed) the dedicated OS users and groups for each agent type. This supports the lightweight mode's reliance on OS-level user/group permissions for isolation.
