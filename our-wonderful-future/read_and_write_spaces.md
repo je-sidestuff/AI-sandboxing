@@ -289,7 +289,7 @@ Glob pattern support (e.g., /workspaces/slopspaces/**) is not needed up-front an
 
 ### Agent-Worker: IMPLEMENTED
 
-The `agent-worker` component now implements the full read/write spaces model with host-mode user isolation:
+The `agent-worker` component implements the full read/write spaces model with host-mode user isolation:
 
 **Workspace Location**: `/agent/agent-worker/`
 - This is a fixed location at the root of the filesystem
@@ -299,27 +299,41 @@ The `agent-worker` component now implements the full read/write spaces model wit
 **Directory Structure**:
 ```
 /agent/agent-worker/
-├── read/
-│   └── default/    # Copy of work unit content (minus .git)
-└── write/
-    └── primary/    # Agent's working directory
+├── read/                  # Read-only (root-owned, 755)
+│   ├── default/           # Copy of AI-sandboxing codebase (minus .git)
+│   └── workunit/          # Copy of work unit content
+└── write/                 # Writable (agent-user-owned, 755)
+    └── primary/           # Agent's working directory
 ```
 
+**Permission Model**:
+The agent sees `/agent/agent-worker/` as its entire world. OS-level user permissions enforce the security boundary:
+- `/agent/agent-worker/` - root:root 755 (agent can traverse)
+- `/agent/agent-worker/read/` - root:root 1777 (sticky bit - binary user can create subdirs, agent can read all)
+- `/agent/agent-worker/write/` - agent-worker:agent-worker 1777 (sticky bit - agent can write here)
+
+The sticky bit (1777) allows the binary (running as vscode or any user) to create and clean up workspace subdirectories without requiring root privileges, while still preventing users from deleting each other's files.
+
+Claude's `--add-dir` grants access to `/agent/agent-worker/` as a single tree, but the filesystem permissions determine what the agent can actually modify.
+
 **File Brokering (Host Mode)**:
-1. Before invocation: Copy work unit content → `/agent/agent-worker/read/default/`
+1. Before invocation:
+   - Copy AI-sandboxing codebase → `/agent/agent-worker/read/default/`
+   - Copy work unit content → `/agent/agent-worker/read/workunit/`
 2. Agent runs with `/agent/agent-worker/write/primary/` as working directory
 3. After invocation: Copy `/agent/agent-worker/write/primary/` content → work unit folder
-4. Cleanup: Remove read and write directories
+4. Cleanup: Remove read and write directory contents
 
 **User Isolation (Host Mode)**:
 - The `agent-worker` binary runs as a privileged user (or root)
+- The binary populates read/ (files are root-owned, so read-only to agent)
+- The binary chowns write/ to the agent user
 - The AI itself runs as the restricted `agent-worker` OS user
-- The restricted user only has filesystem access to `/agent/agent-worker/`
 - Makefile targets manage user creation: `make setup`, `make check-user`
 
 **Environment Variables**:
 - `AGENT_USER`: Override the restricted user (set to empty to disable isolation)
-- `AGENT_ADD_DIRS`: Read spaces passed to the AI via invoke-agent.sh
+- `AGENT_ADD_DIRS`: Workspace root passed to invoke-agent.sh (now just `/agent/agent-worker/`)
 
 ### Heuristic-Request: Pending
 

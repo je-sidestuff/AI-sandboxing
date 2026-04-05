@@ -79,24 +79,40 @@ check-user:
 	fi
 
 # Create the agent workspace directory structure (requires root/sudo)
-# The directories use permissive mode (777) because:
-# - Security comes from the restricted agent user, not directory permissions
-# - The read/ and write/ subdirectories are temporary (cleaned up after each work unit)
-# - This allows any user to run 'make run' and clean up previous workspace contents
+#
+# Permission model:
+# - The agent sees everything under /agent/<type>/ as its filesystem world
+# - OS-level user permissions enforce read vs write access:
+#   - /agent/<type>/        : root-owned, 755 (agent can traverse)
+#   - /agent/<type>/read/   : root-owned, 1777 (sticky bit - anyone can create subdirs,
+#                             but only owner can delete; agent can read all content)
+#   - /agent/<type>/write/  : agent-owned, 1777 (sticky bit - agent can write here)
+# - The binary (running as vscode or any user) can create subdirs in read/ and write/
+# - The agent user can only write within write/ (read/ subdirs are owned by binary user)
+# - Sticky bit (1777) allows the binary user to create/cleanup workspace without root
 setup-dirs:
 	@echo "Setting up agent workspace directories..."
 	@sudo mkdir -p $(AGENT_DIR)/read
 	@sudo mkdir -p $(AGENT_DIR)/write
-	@if id $(AGENT_USER) >/dev/null 2>&1; then \
-		sudo chown $(AGENT_USER):$(AGENT_USER) $(AGENT_DIR); \
-		echo "Directory $(AGENT_DIR) owned by $(AGENT_USER)"; \
-	else \
-		echo "Warning: User $(AGENT_USER) not found, directories created but not chowned"; \
-	fi
+	@# Root owns the agent dir (agent can traverse)
+	@sudo chown root:root $(AGENT_DIR)
 	@sudo chmod 755 $(AGENT_DIR)
-	@sudo chmod 1777 $(AGENT_DIR)/read $(AGENT_DIR)/write
+	@# Read space: sticky bit allows binary user to create subdirs, agent can read all
+	@sudo chown root:root $(AGENT_DIR)/read
+	@sudo chmod 1777 $(AGENT_DIR)/read
+	@# Write space: sticky bit allows binary user to create subdirs, agent can write
+	@if id $(AGENT_USER) >/dev/null 2>&1; then \
+		sudo chown $(AGENT_USER):$(AGENT_USER) $(AGENT_DIR)/write; \
+		echo "Write space $(AGENT_DIR)/write owned by $(AGENT_USER)"; \
+	else \
+		echo "Warning: User $(AGENT_USER) not found, write space owned by root"; \
+	fi
+	@sudo chmod 1777 $(AGENT_DIR)/write
 	@echo "Workspace directories ready at $(AGENT_DIR)"
-	@echo "Note: read/ and write/ use permissive mode for cleanup flexibility"
+	@echo "Permission model:"
+	@echo "  $(AGENT_DIR)/       - root:root 755 (traverse)"
+	@echo "  $(AGENT_DIR)/read/  - root:root 1777 (sticky - binary creates, agent reads)"
+	@echo "  $(AGENT_DIR)/write/ - $(AGENT_USER) 1777 (sticky - agent writes here)"
 
 # Full setup: user + directories
 setup: setup-user setup-dirs

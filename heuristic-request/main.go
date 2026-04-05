@@ -33,6 +33,11 @@ const (
 	// In container mode (future): directories are mounted; AI runs in container
 	agentWorkspaceRoot = "/agent/heuristic-request"
 	defaultAgentUser   = "heuristic-request"
+
+	// Default read-space: a cached copy of AI-sandboxing repo (minus .git)
+	// This provides agents with visibility into the codebase
+	defaultReadSpacePath   = "/workspaces/slopspaces/read-spaces/default"
+	defaultReadSpaceSource = "/workspaces/workspace/sandbox/AI-sandboxing"
 )
 
 // Available agent presets (must match invoke-agent.sh presets)
@@ -69,11 +74,13 @@ type ExtractedFile struct {
 
 // AgentWorkspace represents the prepared workspace for an agent invocation
 // The workspace is located at /agent/heuristic-request/ and contains:
-//   - read/default/  : Copy of work unit content (excluding .git)
+//   - read/default/  : Copy of AI-sandboxing repo (excluding .git) - the default read-space
+//   - read/workunit/ : Copy of work unit content (the heuristic folder)
 //   - write/primary/ : Agent's working directory where it can create/modify files
 type AgentWorkspace struct {
 	RootPath     string // /agent/heuristic-request
-	ReadDefault  string // /agent/heuristic-request/read/default
+	ReadDefault  string // /agent/heuristic-request/read/default (AI-sandboxing repo)
+	ReadWorkunit string // /agent/heuristic-request/read/workunit (work unit content)
 	WritePrimary string // /agent/heuristic-request/write/primary
 }
 
@@ -171,14 +178,48 @@ func (w *HeuristicWatcher) ensureDirectories() error {
 	return nil
 }
 
+// ensureDefaultReadSpace ensures the default read-space exists in slopspaces.
+// The default read-space is a copy of the AI-sandboxing repository with .git removed.
+// This is created once and reused across invocations (refreshed if source is newer).
+func (w *HeuristicWatcher) ensureDefaultReadSpace() error {
+	// Check if default read-space directory exists
+	if _, err := os.Stat(defaultReadSpacePath); os.IsNotExist(err) {
+		log.Printf("[%s] Creating default read-space at %s", w.watcherID, defaultReadSpacePath)
+
+		// Create parent directory
+		if err := os.MkdirAll(filepath.Dir(defaultReadSpacePath), 0755); err != nil {
+			return fmt.Errorf("failed to create read-spaces directory: %w", err)
+		}
+
+		// Copy AI-sandboxing repo to default read-space (excluding .git)
+		if err := os.MkdirAll(defaultReadSpacePath, 0755); err != nil {
+			return fmt.Errorf("failed to create default read-space: %w", err)
+		}
+
+		if err := copyDirContents(defaultReadSpaceSource, defaultReadSpacePath, true); err != nil {
+			return fmt.Errorf("failed to copy AI-sandboxing to default read-space: %w", err)
+		}
+
+		log.Printf("[%s] Default read-space created successfully", w.watcherID)
+	}
+
+	return nil
+}
+
 // prepareWorkspace creates the agent workspace at /agent/heuristic-request/
 // This clears any previous content and sets up fresh read/write spaces.
 // In host mode, the heuristic-request binary (running as a privileged user) prepares this
 // workspace, then runs the AI as a restricted user that only has access to this directory.
+//
+// The workspace contains:
+//   - read/default/  : Copy of AI-sandboxing repo (the default read-space)
+//   - read/workunit/ : Copy of work unit content (the heuristic folder)
+//   - write/primary/ : Agent's working directory
 func (w *HeuristicWatcher) prepareWorkspace(sourcePath string) (*AgentWorkspace, error) {
 	workspace := &AgentWorkspace{
 		RootPath:     agentWorkspaceRoot,
 		ReadDefault:  filepath.Join(agentWorkspaceRoot, "read", "default"),
+		ReadWorkunit: filepath.Join(agentWorkspaceRoot, "read", "workunit"),
 		WritePrimary: filepath.Join(agentWorkspaceRoot, "write", "primary"),
 	}
 
@@ -201,23 +242,33 @@ func (w *HeuristicWatcher) prepareWorkspace(sourcePath string) (*AgentWorkspace,
 	if err := os.MkdirAll(workspace.ReadDefault, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create read/default: %w", err)
 	}
+	if err := os.MkdirAll(workspace.ReadWorkunit, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create read/workunit: %w", err)
+	}
 	if err := os.MkdirAll(workspace.WritePrimary, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create write/primary: %w", err)
 	}
 
-	// Copy work unit content to read/default (excluding .git)
-	if err := copyDirContents(sourcePath, workspace.ReadDefault, true); err != nil {
-		return nil, fmt.Errorf("failed to copy work unit to read space: %w", err)
+	// Copy the default read-space (AI-sandboxing repo) from slopspaces cache
+	// This provides the agent with visibility into the codebase
+	if err := copyDirContents(defaultReadSpacePath, workspace.ReadDefault, true); err != nil {
+		return nil, fmt.Errorf("failed to copy default read-space: %w", err)
 	}
-
-	// Log the workspace preparation to file story
 	w.fileStory.LogTree(filestory.OpCopyIn, workspace.ReadDefault)
 
-	// Set ownership if running as root and agent user is configured
+	// Copy work unit content to read/workunit (excluding .git)
+	if err := copyDirContents(sourcePath, workspace.ReadWorkunit, true); err != nil {
+		return nil, fmt.Errorf("failed to copy work unit to read space: %w", err)
+	}
+	w.fileStory.LogTree(filestory.OpCopyIn, workspace.ReadWorkunit)
+
+	// Set ownership of write space to agent user (if running as root)
+	// The read space stays root-owned so the agent can read but not write.
+	// The write space is chowned to the agent user so they can write.
 	if os.Getuid() == 0 && w.agentUID != 0 {
-		// Recursively chown the workspace to the agent user
-		if err := chownRecursive(agentWorkspaceRoot, w.agentUID, w.agentGID); err != nil {
-			return nil, fmt.Errorf("failed to set workspace ownership: %w", err)
+		// Only chown the write space to the agent user
+		if err := chownRecursive(workspace.WritePrimary, w.agentUID, w.agentGID); err != nil {
+			return nil, fmt.Errorf("failed to set write space ownership: %w", err)
 		}
 	}
 
@@ -770,14 +821,20 @@ func (w *HeuristicWatcher) executeAgent(folderPath, prompt, model string) (strin
 	// Agent runs from write/primary/ - this is its working directory
 	cmd.Dir = workspace.WritePrimary
 
-	// Build AGENT_ADD_DIRS to grant access to read space
-	// The agent gets read/default as an additional directory
-	addDirs := workspace.ReadDefault
-
+	// Grant access to the entire agent workspace root (/agent/heuristic-request/)
+	// The agent sees this as its world:
+	//   /agent/heuristic-request/
+	//   ├── read/           (read-only via OS permissions)
+	//   │   ├── default/    (AI-sandboxing codebase)
+	//   │   └── workunit/   (heuristic work unit files)
+	//   └── write/          (writable via OS permissions)
+	//       └── primary/    (working directory)
+	//
+	// OS-level user permissions enforce that read/ is read-only and write/ is writable.
 	cmd.Env = append(os.Environ(),
 		"AGENT_PRESET="+agentToUse,
 		"AGENT_RECORDS_PATH="+w.recordsDir,
-		"AGENT_ADD_DIRS="+addDirs,
+		"AGENT_ADD_DIRS="+workspace.RootPath,
 	)
 
 	// In host mode, run as restricted user if configured and we're root
@@ -996,6 +1053,11 @@ func main() {
 
 	if err := watcher.ensureDirectories(); err != nil {
 		log.Fatalf("Failed to ensure directories: %v", err)
+	}
+
+	// Ensure the default read-space exists (copy of AI-sandboxing repo)
+	if err := watcher.ensureDefaultReadSpace(); err != nil {
+		log.Fatalf("Failed to ensure default read-space: %v", err)
 	}
 
 	if *onceFlag {
