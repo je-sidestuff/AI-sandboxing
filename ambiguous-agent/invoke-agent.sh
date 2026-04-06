@@ -55,6 +55,12 @@ PRESET_codex_PROMPT_FLAG="-p"
 PRESET_codex_ADD_DIR_FLAG=""
 PRESET_codex_EXEC_ARGS="--full-auto"
 
+# Grok (xAI)
+PRESET_grok_CMD="grok"
+PRESET_grok_PROMPT_FLAG="-p"
+PRESET_grok_ADD_DIR_FLAG=""
+PRESET_grok_EXEC_ARGS=""
+
 # ============================================================================
 # Functions
 # ============================================================================
@@ -78,6 +84,7 @@ Available presets:
   claude    Claude Code (default)
   opencode  OpenCode
   codex     OpenAI Codex
+  grok      xAI Grok
 
 Environment:
   AGENT_RECORDS_PATH  Directory for records storage (default: $RECORDS_PATH)

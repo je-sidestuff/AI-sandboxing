@@ -20,7 +20,17 @@ const defaultRecordsPath = "/workspaces/agent-records/"
 const defaultAgent = "claude"
 
 // Available agent presets (must match invoke-agent.sh presets)
-var availableAgents = []string{"copilot", "gemini", "claude", "opencode", "codex"}
+var availableAgents = []string{"copilot", "gemini", "claude", "opencode", "codex", "grok"}
+
+// Agent colors for visual distinction
+var agentColors = map[string]lipgloss.Color{
+	"copilot":  lipgloss.Color("39"),  // Cyan (GitHub blue)
+	"gemini":   lipgloss.Color("33"),  // Blue (Google blue)
+	"claude":   lipgloss.Color("208"), // Orange (Anthropic)
+	"opencode": lipgloss.Color("34"),  // Green
+	"codex":    lipgloss.Color("99"),  // Purple (OpenAI)
+	"grok":     lipgloss.Color("196"), // Red (xAI)
+}
 
 var (
 	// Styles - subtle decoration
@@ -359,10 +369,15 @@ func main() {
 		} else if line == "list-agents" {
 			fmt.Println(sessionStyle.Render("available agents:"))
 			for _, a := range availableAgents {
+				color := agentColors[a]
+				if color == "" {
+					color = lipgloss.Color("141") // Fallback purple
+				}
+				agentNameStyle := lipgloss.NewStyle().Foreground(color).Bold(true)
 				if a == currentAgent {
-					fmt.Println(agentStyle.Render(fmt.Sprintf("  → %s (selected)", a)))
+					fmt.Println(agentNameStyle.Render(fmt.Sprintf("  → %s (selected)", a)))
 				} else {
-					fmt.Println(sessionStyle.Render(fmt.Sprintf("    %s", a)))
+					fmt.Println(agentNameStyle.Render(fmt.Sprintf("    %s", a)))
 				}
 			}
 			continue
@@ -619,7 +634,13 @@ func abbreviatePath(path string, maxLen int) string {
 func buildPrompt(cwd string, agent string) string {
 	// Show abbreviated path (max 30 chars for the path portion)
 	dir := abbreviatePath(cwd, 30)
-	return agentStyle.Render("["+agent+"]") + " " + promptStyle.Render(dir) + " › "
+	// Use agent-specific color if available
+	color := agentColors[agent]
+	if color == "" {
+		color = lipgloss.Color("141") // Fallback purple
+	}
+	agentPromptStyle := lipgloss.NewStyle().Foreground(color).Bold(true)
+	return agentPromptStyle.Render("["+agent+"]") + " " + promptStyle.Render(dir) + " › "
 }
 
 func runCommand(cmdLine string, logFile *os.File) int {

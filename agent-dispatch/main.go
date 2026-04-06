@@ -17,6 +17,7 @@ import (
 	"agent-dispatch/prpoller"
 
 	"github.com/google/uuid"
+	"github.com/je-sidestuff/AI-sandboxing/pkg/filestory"
 )
 
 // Default paths
@@ -106,6 +107,11 @@ type Dispatch struct {
 	SequenceRepoName       string   `json:"sequence_repo_name,omitempty"`       // For sequence-to-new-repo: custom repo name (if not set, auto-generates seq-YYYYMMDD-HHMMSS-uuid)
 	SequenceCommands       []string `json:"sequence_commands,omitempty"`        // For sequence-to-new-repo: list of sequential commands
 	SequenceMinutesBetween int      `json:"sequence_minutes_between,omitempty"` // For sequence-to-new-repo: minutes between steps (default: 20)
+
+	// Write-spaces configuration (for integration with agent-worker write-spaces paradigm)
+	WriteSpaceWorkingDir string `json:"write_space_working_dir,omitempty"` // Override slopspaces_working_dir (default: /workspaces/slopspaces/working/)
+	WriteSpaceInputDir   string `json:"write_space_input_dir,omitempty"`   // Override worker input directory (default: /workspaces/slopspaces/input/any/)
+	WriteSpaceOutputDir  string `json:"write_space_output_dir,omitempty"`  // Override worker output directory (default: /workspaces/slopspaces/output/content/)
 }
 
 // DispatchResult represents the result of a dispatched work unit
@@ -185,13 +191,14 @@ type Dispatcher struct {
 	lastActivity    time.Time
 	backoffIndex    int
 	nextBackoffLog  time.Time
-	prPoller        *prpoller.Poller // centralized PR comment poller
+	prPoller        *prpoller.Poller  // centralized PR comment poller
+	fileStory       *filestory.Logger // File operation logger (nil if FILE_STORY_PATH not set)
 
 	// Change tracking for smart polling
 	flowChanges      map[string]bool // flowID -> hasChanges; set by PR poller, cleared after terraform apply
 	flowChangesMu    sync.Mutex
-	lastPeriodicPoll time.Time         // last time we did a full periodic poll
-	periodicInterval time.Duration     // how often to poll even without changes (default 5 min)
+	lastPeriodicPoll time.Time     // last time we did a full periodic poll
+	periodicInterval time.Duration // how often to poll even without changes (default 5 min)
 }
 
 // NewDispatcher creates a new dispatcher instance
@@ -234,6 +241,9 @@ func NewDispatcher() *Dispatcher {
 	now := time.Now()
 	dispatcherID := uuid.New().String()[:8]
 
+	// Initialize file story logger (uses FILE_STORY_PATH env var)
+	fileStoryLogger := filestory.NewLogger("agent-dispatch")
+
 	d := &Dispatcher{
 		dispatcherID:     dispatcherID,
 		inputDir:         inputDir,
@@ -249,6 +259,7 @@ func NewDispatcher() *Dispatcher {
 		flowChanges:      make(map[string]bool),
 		lastPeriodicPoll: now,
 		periodicInterval: 1 * time.Minute, // Fallback poll every 1 minute even without detected changes
+		fileStory:        fileStoryLogger,
 	}
 
 	// Initialize the PR poller for monitoring active flows
@@ -920,6 +931,9 @@ func (d *Dispatcher) processDispatchUnit(unit DispatchUnit) error {
 func (d *Dispatcher) processDirectDispatch(unit DispatchUnit) error {
 	log.Printf("[%s] Processing direct dispatch: %s", d.dispatcherID, unit.ID)
 
+	// Log the incoming dispatch unit (FILE_STORY)
+	d.fileStory.LogTree(filestory.OpCopyIn, unit.Path)
+
 	// For direct dispatch, we transform the dispatch into an instruction
 	// and let the agent-worker pick it up from the same location
 
@@ -941,6 +955,9 @@ func (d *Dispatcher) processDirectDispatch(unit DispatchUnit) error {
 		return fmt.Errorf("failed to write INSTRUCTION.json: %w", err)
 	}
 
+	// Log the INSTRUCTION.json creation (FILE_STORY)
+	d.fileStory.LogFile(filestory.OpCreate, instPath)
+
 	// Remove DISPATCH.json and DISPATCHING.md so worker picks up the INSTRUCTION
 	os.Remove(filepath.Join(unit.Path, "DISPATCH.json"))
 	os.Remove(filepath.Join(unit.Path, "DISPATCHING.md"))
@@ -952,6 +969,9 @@ func (d *Dispatcher) processDirectDispatch(unit DispatchUnit) error {
 // processInRepoDispatch handles in-repo dispatch with terraform lifecycle
 func (d *Dispatcher) processInRepoDispatch(unit DispatchUnit) error {
 	log.Printf("[%s] Processing in-repo dispatch: %s", d.dispatcherID, unit.ID)
+
+	// Log the incoming dispatch unit (FILE_STORY)
+	d.fileStory.LogTree(filestory.OpCopyIn, unit.Path)
 
 	if d.githubPAT == "" {
 		return fmt.Errorf("GITHUB_PAT or GH_TOKEN environment variable is required for in-repo dispatch")
@@ -991,6 +1011,9 @@ func (d *Dispatcher) processInRepoDispatch(unit DispatchUnit) error {
 		d.writeFlowRecord(flowRecord)
 		return fmt.Errorf("failed to create terraform config: %w", err)
 	}
+
+	// Log the terraform config creation (FILE_STORY)
+	d.fileStory.LogTree(filestory.OpCreate, tfConfigDir)
 
 	// Run terraform init
 	log.Printf("[%s] Running terraform init in %s", d.dispatcherID, tfConfigDir)
@@ -1040,6 +1063,9 @@ func (d *Dispatcher) processInRepoDispatch(unit DispatchUnit) error {
 func (d *Dispatcher) processRepoIsolationDispatch(unit DispatchUnit) error {
 	log.Printf("[%s] Processing repo-isolation dispatch: %s", d.dispatcherID, unit.ID)
 
+	// Log the incoming dispatch unit (FILE_STORY)
+	d.fileStory.LogTree(filestory.OpCopyIn, unit.Path)
+
 	if d.githubPAT == "" {
 		return fmt.Errorf("GITHUB_PAT or GH_TOKEN environment variable is required for repo-isolation dispatch")
 	}
@@ -1087,6 +1113,9 @@ func (d *Dispatcher) processRepoIsolationDispatch(unit DispatchUnit) error {
 		d.writeFlowRecord(flowRecord)
 		return fmt.Errorf("failed to create terraform config: %w", err)
 	}
+
+	// Log the terraform config creation (FILE_STORY)
+	d.fileStory.LogTree(filestory.OpCreate, tfConfigDir)
 
 	// Run terraform init
 	log.Printf("[%s] Running terraform init in %s", d.dispatcherID, tfConfigDir)
@@ -1173,6 +1202,9 @@ func (d *Dispatcher) processRepoIsolationDispatch(unit DispatchUnit) error {
 func (d *Dispatcher) processSequenceToNewRepoDispatch(unit DispatchUnit) error {
 	log.Printf("[%s] Processing sequence-to-new-repo dispatch: %s", d.dispatcherID, unit.ID)
 
+	// Log the incoming dispatch unit (FILE_STORY)
+	d.fileStory.LogTree(filestory.OpCopyIn, unit.Path)
+
 	if d.githubPAT == "" {
 		return fmt.Errorf("GITHUB_PAT or GH_TOKEN environment variable is required for sequence-to-new-repo dispatch")
 	}
@@ -1231,6 +1263,9 @@ func (d *Dispatcher) processSequenceToNewRepoDispatch(unit DispatchUnit) error {
 		d.writeFlowRecord(flowRecord)
 		return fmt.Errorf("failed to create terraform config: %w", err)
 	}
+
+	// Log the terraform config creation (FILE_STORY)
+	d.fileStory.LogTree(filestory.OpCreate, tfConfigDir)
 
 	// Run terraform init
 	log.Printf("[%s] Running terraform init in %s", d.dispatcherID, tfConfigDir)
@@ -1894,6 +1929,12 @@ variable "minutes_between_steps" {
   type        = number
   default     = 20
 }
+
+variable "slopspaces_working_dir" {
+  description = "The slopspaces working directory for sequence execution"
+  type        = string
+  default     = "/workspaces/slopspaces/working/"
+}
 `
 
 	// Get mode from dispatch, default to "execute"
@@ -1931,7 +1972,7 @@ module "ai_containment" {
   dispatcher_name        = "%s"
   github_pat             = var.github_pat
   github_owner           = var.github_owner
-  slopspaces_working_dir = "/workspaces/slopspaces/working/"
+  slopspaces_working_dir = var.slopspaces_working_dir
   instruction            = var.instruction
   instruction_mode       = var.instruction_mode
 }
@@ -1951,7 +1992,7 @@ module "sequence_execution" {
   commands               = local.sequence_commands
   start_time_millis      = var.start_time_millis
   minutes_between_steps  = var.minutes_between_steps
-  slopspaces_working_dir = "/workspaces/slopspaces/working/"
+  slopspaces_working_dir = var.slopspaces_working_dir
 }
 `, toRepoModulePath, flowID, sequenceModulePath, flowID)
 
@@ -2029,17 +2070,24 @@ output "sequence_complete" {
 	}
 	sequenceCommandsHCL := "[\n" + strings.Join(cmdListItems, ",\n") + "\n]"
 
+	// Determine write-space working directory (use override if provided)
+	writeSpaceWorkingDir := "/workspaces/slopspaces/working/"
+	if dispatch.WriteSpaceWorkingDir != "" {
+		writeSpaceWorkingDir = dispatch.WriteSpaceWorkingDir
+	}
+
 	// Create terraform.tfvars with all variables
 	// Note: start_time_millis starts at year 3000, will be updated after first apply
-	tfvarsTF := fmt.Sprintf(`github_pat            = "%s"
-github_owner          = "%s"
-target_repo_name      = "%s"
-instruction           = "%s"
-instruction_mode      = "%s"
-minutes_between_steps = %d
-start_time_millis     = 32503680000000
-sequence_commands     = %s
-`, d.githubPAT, d.githubOwner, targetRepoName, escapedInstruction, mode, minutesBetween, sequenceCommandsHCL)
+	tfvarsTF := fmt.Sprintf(`github_pat             = "%s"
+github_owner           = "%s"
+target_repo_name       = "%s"
+instruction            = "%s"
+instruction_mode       = "%s"
+minutes_between_steps  = %d
+start_time_millis      = 32503680000000
+slopspaces_working_dir = "%s"
+sequence_commands      = %s
+`, d.githubPAT, d.githubOwner, targetRepoName, escapedInstruction, mode, minutesBetween, writeSpaceWorkingDir, sequenceCommandsHCL)
 
 	// Write all the files
 	files := map[string]string{
@@ -2851,6 +2899,10 @@ func (d *Dispatcher) handleReintegrationComplete(record *FlowRecord, reintegrati
 // performFlowCleanup runs terraform destroy and marks the flow as completed
 func (d *Dispatcher) performFlowCleanup(record *FlowRecord, reason string) error {
 	log.Printf("[%s] Running terraform destroy for flow %s (reason: %s)", d.dispatcherID, record.FlowID, reason)
+
+	// Log the terraform config state before cleanup (FILE_STORY)
+	d.fileStory.LogTree(filestory.OpDelete, record.TFConfigDir)
+
 	if err := d.runTerraform(record.TFConfigDir, "destroy", "-auto-approve"); err != nil {
 		log.Printf("[%s] Flow %s terraform destroy failed: %v", d.dispatcherID, record.FlowID, err)
 		record.Error = fmt.Sprintf("terraform destroy failed: %v", err)
