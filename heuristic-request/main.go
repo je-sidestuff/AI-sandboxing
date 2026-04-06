@@ -629,24 +629,34 @@ For multi-step tasks that should be executed as a series of timed steps in a NEW
 - 20 minutes between steps is the default; adjust based on complexity (5-60 minutes typical)
 - Keep steps focused: 3-10 steps is typical, max 80
 
-## Alternate Output: INSTRUCTION
+## Alternate Output: INSTRUCTION (RARELY USED)
 
-If the task is a very simple instruction that doesn't need dispatch orchestration:
+IMPORTANT: Only use INSTRUCTION.json for trivial read-only queries that need NO approval and NO file modifications.
+Examples: "what time is it?", "explain what X means", "list available agents"
+
+For ANY task that involves:
+- Creating, modifying, or deleting files
+- Making changes to code or repositories
+- Bug fixes, features, or refactoring
+- Analysis that produces output files
+
+→ USE DISPATCH.json instead (with type "direct" for local tasks)
 
 %sjson INSTRUCTION.json
 {
-  "instruction": "Your instruction here",
+  "instruction": "Your trivial read-only query here",
   "mode": "prompt"
 }
 %s
 
 ## Guidelines
 
+- **DISPATCH is the default** - almost all tasks should use DISPATCH.json
 - **repo-isolation**: Default choice for modifying repos. Phrases like "add a feature to X", "implement Y in Z repo"
 - **in-repo**: Use for quick fixes where isolation overhead isn't warranted
-- **direct**: Use for local tasks, reports, analysis that don't modify external repos
+- **direct**: Use for local tasks, reports, analysis, bug fixes - anything that creates or modifies files locally
 - **sequence-to-new-repo**: Use for multi-part content creation (tutorials, documentation, phased implementations)
-- **INSTRUCTION**: Use for very simple prompts that don't need any orchestration
+- **INSTRUCTION**: ONLY for trivial read-only queries with no file operations
 - Infer repo owner when not specified: "agent-events" → "je-sidestuff/agent-events"
 - All dispatches go through approval automatically - you don't need to specify approval
 
@@ -712,8 +722,9 @@ func (w *HeuristicWatcher) processHeuristicUnit(unit HeuristicUnit) error {
 
 	// Extract files from output
 	extractedFiles := extractFilesFromOutput(output)
+	log.Printf("[%s] Extracted %d files from agent output (exit code: %d)", w.watcherID, len(extractedFiles), exitCode)
 	if len(extractedFiles) == 0 {
-		err := fmt.Errorf("no valid files extracted from agent output")
+		err := fmt.Errorf("no valid files extracted from agent output (exit code: %d, output length: %d bytes)", exitCode, len(output))
 		w.markHeuristicFailed(unit, err, startTime)
 		return err
 	}
@@ -831,6 +842,10 @@ func (w *HeuristicWatcher) executeAgent(folderPath, prompt, model string) (strin
 	//       └── primary/    (working directory)
 	//
 	// OS-level user permissions enforce that read/ is read-only and write/ is writable.
+	//
+	// Note: We do NOT override HOME here. Claude and other agents need access to their
+	// credentials in ~/.claude/ or similar. The working directory (cmd.Dir) is set
+	// to the write space, but the agent can still access its normal config files.
 	cmd.Env = append(os.Environ(),
 		"AGENT_PRESET="+agentToUse,
 		"AGENT_RECORDS_PATH="+w.recordsDir,
@@ -863,10 +878,12 @@ func (w *HeuristicWatcher) executeAgent(folderPath, prompt, model string) (strin
 	}
 	defer outFile.Close()
 
-	// Use a multi-writer to capture output and also display it
+	// Capture output to file - stdin should NOT be connected since we're using
+	// prompt-only mode (-p) which is non-interactive. Connecting os.Stdin can
+	// cause hangs when running as a daemon or in environments without a TTY.
 	cmd.Stdout = outFile
 	cmd.Stderr = outFile
-	cmd.Stdin = os.Stdin
+	// cmd.Stdin is intentionally left nil (defaults to /dev/null) for non-interactive mode
 
 	log.Printf("[%s] Invoking agent %s in prompt-only mode", w.watcherID, agentToUse)
 	log.Printf("[%s] Workspace: %s", w.watcherID, workspace.RootPath)
@@ -875,6 +892,7 @@ func (w *HeuristicWatcher) executeAgent(folderPath, prompt, model string) (strin
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
+			log.Printf("[%s] Agent exited with code %d", w.watcherID, exitCode)
 		} else {
 			return "", 1, fmt.Errorf("failed to run agent: %w", err)
 		}
@@ -884,6 +902,17 @@ func (w *HeuristicWatcher) executeAgent(folderPath, prompt, model string) (strin
 	output, err := os.ReadFile(outputFile)
 	if err != nil {
 		return "", exitCode, fmt.Errorf("failed to read output file: %w", err)
+	}
+
+	// Log output info for debugging
+	outputLen := len(output)
+	log.Printf("[%s] Agent output: %d bytes", w.watcherID, outputLen)
+	if outputLen > 0 && outputLen < 500 {
+		// Log short outputs in full for debugging
+		log.Printf("[%s] Output content: %s", w.watcherID, string(output))
+	} else if outputLen >= 500 {
+		// Log first 200 chars of longer outputs
+		log.Printf("[%s] Output preview: %s...", w.watcherID, string(output[:200]))
 	}
 
 	return string(output), exitCode, nil

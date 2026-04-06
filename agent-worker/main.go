@@ -424,63 +424,84 @@ func chownRecursive(path string, uid, gid int) error {
 func buildWorkspacePreamble(workspace *AgentWorkspace) string {
 	return fmt.Sprintf(`## Workspace Environment
 
-You are running in a sandboxed workspace with the following structure:
+You are running in a sandboxed workspace. Here's what you need to know:
 
-**Your working directory (where you can create/modify files):**
-- %s
+**YOUR WORKING DIRECTORY (where you MUST create/modify all files):**
+%s
 
-**Read-only reference directories:**
-- %s (codebase reference)
-- %s (work unit files)
+**Reference materials (READ-ONLY - do NOT try to write here):**
+- %s - This is a READ-ONLY copy of the codebase for reference
+- %s - This contains your work unit instructions
+
+**CRITICAL RULES:**
+1. ALL file operations (create, edit, write) MUST happen in %s
+2. The read/default/ directory contains a COPY of the codebase - do NOT try to modify it
+3. If you see paths like "ignored-scratch/" or "agent-scribe/" in the codebase reference, those are READ-ONLY copies - create your own directories in the write space instead
+4. Do NOT request access to paths outside this workspace (like /* or /root)
+5. When you need to create test files, logs, or any output - use your working directory
 
 **Root workspace:** %s
 
-IMPORTANT: Only access files within %s. Do not request access to paths outside this workspace (like /* or /root).
-
 ---
 
-`, workspace.WritePrimary, workspace.ReadDefault, workspace.ReadWorkunit, workspace.RootPath, workspace.RootPath)
+`, workspace.WritePrimary, workspace.ReadDefault, workspace.ReadWorkunit, workspace.WritePrimary, workspace.RootPath)
 }
 
 // prepareAgentConfig writes agent-specific configuration files to the workspace.
 // Different agents have different ways to configure allowed directories:
 // - Claude Code: uses --add-dir flag (handled in invoke-agent.sh)
 // - Copilot: uses --add-dir flag (handled in invoke-agent.sh)
-// - OpenCode: uses .opencode.json config file in working directory
+// - OpenCode: uses .opencode.json config file (location may vary)
 // - Others: may not support external directory configuration
 func (w *AgentWorker) prepareAgentConfig(workspace *AgentWorkspace, agent string) error {
 	switch agent {
 	case "opencode":
-		// OpenCode uses a .opencode.json config file to specify allowed directories
-		// We grant access to the entire /agent workspace root, which contains:
-		// - read/default/ (codebase) - read-only via OS permissions
-		// - read/workunit/ (work unit) - read-only via OS permissions
-		// - write/primary/ (working directory) - writable
+		// OpenCode uses a .opencode.json config file to specify allowed directories.
+		// We write the config to multiple locations since opencode might look in:
+		// 1. Current working directory (workspace.WritePrimary)
+		// 2. User's home directory ($HOME or /agent/agent-worker which is the agent's home)
 		//
-		// The agent workspace root (/agent/agent-worker) is added as an allowed
-		// external directory so opencode won't request broad /* access.
+		// IMPORTANT: We are very restrictive about write access:
+		// - ONLY the write/primary directory should be writable
+		// - read/default/ and read/workunit/ are for reading reference materials
+		// - The agent must NOT try to write to paths that look like they came from the codebase copy
+		//
+		// The read/default/ directory contains a COPY of the AI-sandboxing repo. When
+		// the agent sees paths like "ignored-scratch/" or "agent-scribe/" there, those are
+		// NOT actual working directories - they're read-only reference copies. The agent
+		// should create its own directories in write/primary/ instead.
 		opencodeConfig := map[string]interface{}{
 			"lsp": map[string]interface{}{
 				"disabled": true,
 			},
-			// Context paths for file reading
+			// Context paths for file reading - agent can READ from these
 			"contextPaths": []string{
-				workspace.RootPath,     // /agent/agent-worker
-				workspace.ReadDefault,  // /agent/agent-worker/read/default
-				workspace.ReadWorkunit, // /agent/agent-worker/read/workunit
+				workspace.WritePrimary,  // /agent/agent-worker/write/primary (working dir)
+				workspace.ReadDefault,   // /agent/agent-worker/read/default (codebase reference - READ ONLY)
+				workspace.ReadWorkunit,  // /agent/agent-worker/read/workunit (work unit - READ ONLY)
 			},
-			// Allowed directories for external access (prevents /* requests)
+			// Allowed directories for external access - ONLY the write space for modifications
 			"allowedDirectories": []string{
-				workspace.RootPath, // /agent/agent-worker
+				workspace.WritePrimary, // ONLY allow writes to write/primary
 			},
-			// External directories that the agent can access
+			// External directories that the agent can access (read)
 			"externalDirectories": []string{
-				workspace.RootPath, // /agent/agent-worker
+				workspace.RootPath, // /agent/agent-worker (for reading)
 			},
-			// Permissions for file operations
+			// Permissions for file operations - be restrictive
 			"permissions": map[string]interface{}{
+				// Only auto-approve the write space for external_directory permission
 				"external_directory": []string{
-					workspace.RootPath, // /agent/agent-worker
+					workspace.WritePrimary,                          // /agent/agent-worker/write/primary
+					workspace.WritePrimary + "/*",                   // subdirs of write space
+					filepath.Join(workspace.RootPath, "write") + "/*", // anything under write/
+				},
+			},
+			// Auto-approve permissions ONLY for write paths
+			"autoApprove": map[string]interface{}{
+				"external_directory": []string{
+					workspace.WritePrimary + "/*",                     // Only auto-approve write/primary/*
+					filepath.Join(workspace.RootPath, "write") + "/*", // and write/*
 				},
 			},
 		}
@@ -490,14 +511,23 @@ func (w *AgentWorker) prepareAgentConfig(workspace *AgentWorkspace, agent string
 			return fmt.Errorf("failed to marshal opencode config: %w", err)
 		}
 
+		// Write to working directory
 		configPath := filepath.Join(workspace.WritePrimary, ".opencode.json")
 		if err := os.WriteFile(configPath, configData, 0644); err != nil {
 			return fmt.Errorf("failed to write opencode config: %w", err)
 		}
 
+		// Also write to the agent workspace root (which serves as the agent's "home")
+		// This covers cases where opencode looks in $HOME or the process's home dir
+		homeConfigPath := filepath.Join(workspace.RootPath, ".opencode.json")
+		if err := os.WriteFile(homeConfigPath, configData, 0644); err != nil {
+			log.Printf("[%s] Warning: failed to write opencode config to home: %v", w.workerID, err)
+		}
+
 		// Set ownership if running as root
 		if os.Getuid() == 0 && w.agentUID != 0 {
 			os.Chown(configPath, w.agentUID, w.agentGID)
+			os.Chown(homeConfigPath, w.agentUID, w.agentGID)
 		}
 
 		log.Printf("[%s] Created opencode config for workspace: %s", w.workerID, workspace.RootPath)
@@ -1113,6 +1143,12 @@ func (w *AgentWorker) executeAgent(folderPath string, inst *Instruction, agent s
 	//       └── primary/    (working directory)
 	//
 	// OS-level user permissions enforce that read/ is read-only and write/ is writable.
+	//
+	// Note: We do NOT override HOME here. Claude and other agents need access to their
+	// credentials in ~/.claude/ or similar. The working directory (cmd.Dir) is set
+	// to the write space, but the agent can still access its normal config files.
+	// Tools like opencode that need local config files should have them placed in
+	// the workspace read space if required.
 	cmd.Env = append(os.Environ(),
 		"AGENT_PRESET="+agent,
 		"AGENT_RECORDS_PATH="+w.recordsDir,
@@ -1134,7 +1170,11 @@ func (w *AgentWorker) executeAgent(folderPath string, inst *Instruction, agent s
 		log.Printf("[%s] Warning: agent user '%s' not found, running as current user", w.workerID, w.agentUser)
 	}
 
-	cmd.Stdin = os.Stdin
+	// For daemon/background operation, stdin should not be connected to os.Stdin
+	// as this can cause hangs when there's no TTY. In execute mode with AGENT_FULL_AUTO,
+	// the agent is pre-approved and doesn't need interactive input.
+	// In prompt mode, it's explicitly non-interactive.
+	// Leaving cmd.Stdin as nil (defaults to /dev/null) prevents hanging.
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -1266,6 +1306,10 @@ func (w *AgentWorker) executeReportAgent(folderPath string, report *Report, agen
 	//       └── primary/    (working directory)
 	//
 	// OS-level user permissions enforce that read/ is read-only and write/ is writable.
+	//
+	// Note: We do NOT override HOME here. Claude and other agents need access to their
+	// credentials in ~/.claude/ or similar. The working directory (cmd.Dir) is set
+	// to the write space, but the agent can still access its normal config files.
 	cmd.Env = append(os.Environ(),
 		"AGENT_PRESET="+agent,
 		"AGENT_RECORDS_PATH="+w.recordsDir,
@@ -1287,7 +1331,8 @@ func (w *AgentWorker) executeReportAgent(folderPath string, report *Report, agen
 		log.Printf("[%s] Warning: agent user '%s' not found, running as current user", w.workerID, w.agentUser)
 	}
 
-	cmd.Stdin = os.Stdin
+	// Reports use execute mode with AGENT_FULL_AUTO - no interactive input needed.
+	// Leaving cmd.Stdin as nil (defaults to /dev/null) prevents hanging in daemon context.
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
