@@ -1700,7 +1700,8 @@ func (d *Dispatcher) createRepoIsolationTerraformConfig(configDir, flowID, targe
 }
 
 provider "github" {
-  token = var.github_pat
+  token          = var.github_pat
+  write_delay_ms = 3000
 }
 `
 
@@ -1881,7 +1882,8 @@ func (d *Dispatcher) createSequenceToNewRepoTerraformConfig(configDir, flowID, t
 }
 
 provider "github" {
-  token = var.github_pat
+  token          = var.github_pat
+  write_delay_ms = 3000
 }
 `
 
@@ -2157,7 +2159,8 @@ func (d *Dispatcher) createApprovalTerraformConfig(configDir, flowID, approvalOw
 }
 
 provider "github" {
-  token = var.github_pat
+  token          = var.github_pat
+  write_delay_ms = 3000
 }
 `
 
@@ -2336,7 +2339,8 @@ func (d *Dispatcher) createInRepoTerraformConfig(configDir, flowID, targetRepo s
 }
 
 provider "github" {
-  token = var.github_pat
+  token          = var.github_pat
+  write_delay_ms = 3000
 }
 `
 

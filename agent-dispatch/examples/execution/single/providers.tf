@@ -16,5 +16,6 @@ terraform {
 }
 
 provider "github" {
-  token = var.github_pat
+  token          = var.github_pat
+  write_delay_ms = 3000
 }
