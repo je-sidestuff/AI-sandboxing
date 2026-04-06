@@ -418,6 +418,94 @@ func chownRecursive(path string, uid, gid int) error {
 	})
 }
 
+// buildWorkspacePreamble creates a context preamble that explains the workspace structure
+// to the agent. This helps agents understand their filesystem boundaries and prevents
+// them from requesting broad access like "/*".
+func buildWorkspacePreamble(workspace *AgentWorkspace) string {
+	return fmt.Sprintf(`## Workspace Environment
+
+You are running in a sandboxed workspace with the following structure:
+
+**Your working directory (where you can create/modify files):**
+- %s
+
+**Read-only reference directories:**
+- %s (codebase reference)
+- %s (work unit files)
+
+**Root workspace:** %s
+
+IMPORTANT: Only access files within %s. Do not request access to paths outside this workspace (like /* or /root).
+
+---
+
+`, workspace.WritePrimary, workspace.ReadDefault, workspace.ReadWorkunit, workspace.RootPath, workspace.RootPath)
+}
+
+// prepareAgentConfig writes agent-specific configuration files to the workspace.
+// Different agents have different ways to configure allowed directories:
+// - Claude Code: uses --add-dir flag (handled in invoke-agent.sh)
+// - Copilot: uses --add-dir flag (handled in invoke-agent.sh)
+// - OpenCode: uses .opencode.json config file in working directory
+// - Others: may not support external directory configuration
+func (w *AgentWorker) prepareAgentConfig(workspace *AgentWorkspace, agent string) error {
+	switch agent {
+	case "opencode":
+		// OpenCode uses a .opencode.json config file to specify allowed directories
+		// We grant access to the entire /agent workspace root, which contains:
+		// - read/default/ (codebase) - read-only via OS permissions
+		// - read/workunit/ (work unit) - read-only via OS permissions
+		// - write/primary/ (working directory) - writable
+		//
+		// The agent workspace root (/agent/agent-worker) is added as an allowed
+		// external directory so opencode won't request broad /* access.
+		opencodeConfig := map[string]interface{}{
+			"lsp": map[string]interface{}{
+				"disabled": true,
+			},
+			// Context paths for file reading
+			"contextPaths": []string{
+				workspace.RootPath,     // /agent/agent-worker
+				workspace.ReadDefault,  // /agent/agent-worker/read/default
+				workspace.ReadWorkunit, // /agent/agent-worker/read/workunit
+			},
+			// Allowed directories for external access (prevents /* requests)
+			"allowedDirectories": []string{
+				workspace.RootPath, // /agent/agent-worker
+			},
+			// External directories that the agent can access
+			"externalDirectories": []string{
+				workspace.RootPath, // /agent/agent-worker
+			},
+			// Permissions for file operations
+			"permissions": map[string]interface{}{
+				"external_directory": []string{
+					workspace.RootPath, // /agent/agent-worker
+				},
+			},
+		}
+
+		configData, err := json.MarshalIndent(opencodeConfig, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal opencode config: %w", err)
+		}
+
+		configPath := filepath.Join(workspace.WritePrimary, ".opencode.json")
+		if err := os.WriteFile(configPath, configData, 0644); err != nil {
+			return fmt.Errorf("failed to write opencode config: %w", err)
+		}
+
+		// Set ownership if running as root
+		if os.Getuid() == 0 && w.agentUID != 0 {
+			os.Chown(configPath, w.agentUID, w.agentGID)
+		}
+
+		log.Printf("[%s] Created opencode config for workspace: %s", w.workerID, workspace.RootPath)
+	}
+
+	return nil
+}
+
 // copyWriteSpaceOutput copies files from write/primary back to the work unit folder
 // This extracts the agent's output after execution
 func (w *AgentWorker) copyWriteSpaceOutput(workspace *AgentWorkspace, destPath string) error {
@@ -972,15 +1060,25 @@ func (w *AgentWorker) executeAgent(folderPath string, inst *Instruction, agent s
 		w.cleanupWorkspace()
 	}()
 
+	// Write agent-specific configuration files (e.g., .opencode.json for opencode)
+	if err := w.prepareAgentConfig(workspace, agent); err != nil {
+		log.Printf("Warning: failed to prepare agent config: %v", err)
+		// Continue anyway - some agents may work without config
+	}
+
 	// Determine mode flag
 	modeFlag := "-p"
 	if inst.Mode == "execute" {
 		modeFlag = "-e"
 	}
 
+	// Build the full instruction with workspace context preamble
+	// This helps the agent understand its filesystem boundaries
+	fullInstruction := buildWorkspacePreamble(workspace) + inst.Instruction
+
 	// Write instruction to the write space so the agent can see it
 	promptFile := filepath.Join(workspace.WritePrimary, ".prompt.tmp")
-	if err := os.WriteFile(promptFile, []byte(inst.Instruction), 0644); err != nil {
+	if err := os.WriteFile(promptFile, []byte(fullInstruction), 0644); err != nil {
 		log.Printf("Error: failed to write prompt file: %v", err)
 		return 1
 	}
@@ -1103,6 +1201,12 @@ func (w *AgentWorker) executeReportAgent(folderPath string, report *Report, agen
 		w.cleanupWorkspace()
 	}()
 
+	// Write agent-specific configuration files (e.g., .opencode.json for opencode)
+	if err := w.prepareAgentConfig(workspace, agent); err != nil {
+		log.Printf("Warning: failed to prepare agent config: %v", err)
+		// Continue anyway - some agents may work without config
+	}
+
 	// Build the instruction based on report type
 	var instruction string
 	contextPrompt := w.buildReportContextPrompt()
@@ -1129,9 +1233,12 @@ func (w *AgentWorker) executeReportAgent(folderPath string, report *Report, agen
 	// Reports always use execute mode to allow file creation
 	modeFlag := "-e"
 
+	// Add workspace context preamble to help agent understand its boundaries
+	fullInstruction := buildWorkspacePreamble(workspace) + instruction
+
 	// Write instruction to the write space so the agent can see it
 	promptFile := filepath.Join(workspace.WritePrimary, ".prompt.tmp")
-	if err := os.WriteFile(promptFile, []byte(instruction), 0644); err != nil {
+	if err := os.WriteFile(promptFile, []byte(fullInstruction), 0644); err != nil {
 		log.Printf("Error: failed to write prompt file: %v", err)
 		return 1
 	}

@@ -10,11 +10,17 @@ Required environment variables:
 
 import json
 import os
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
 
 def post_comment(repo, pr_number, body, pat):
+    """Post a comment to a GitHub PR.
+
+    Returns None if the repo or PR does not exist (404), allowing callers
+    to treat non-existent repos/PRs gracefully.
+    """
     url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
     data = json.dumps({"body": body}).encode("utf-8")
     req = urllib.request.Request(
@@ -26,8 +32,13 @@ def post_comment(repo, pr_number, body, pat):
             "Accept": "application/vnd.github.v3+json",
         },
     )
-    with urllib.request.urlopen(req) as resp:
-        return json.load(resp)
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
 
 
 def main():
@@ -44,8 +55,11 @@ def main():
 
     for instruction in instructions:
         body = f"REVISING: Begin revision for {instruction} at {timestamp}"
-        post_comment(repo, pr_number, body, pat)
-        print(f"Posted comment: {body[:80]}...")
+        result = post_comment(repo, pr_number, body, pat)
+        if result is None:
+            print(f"Skipped (repo/PR not found): {body[:80]}...")
+        else:
+            print(f"Posted comment: {body[:80]}...")
 
 
 if __name__ == "__main__":

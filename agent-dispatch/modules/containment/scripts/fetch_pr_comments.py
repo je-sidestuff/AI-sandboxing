@@ -25,22 +25,36 @@ Usage (standalone):
 
 import json
 import sys
+import urllib.error
 import urllib.request
 
 
-def github_get_object(url: str, pat: str) -> dict:
-    """Fetch a single object from a GitHub API endpoint."""
+def github_get_object(url: str, pat: str) -> dict | None:
+    """Fetch a single object from a GitHub API endpoint.
+
+    Returns None if the resource does not exist (404), allowing callers
+    to treat non-existent repos/PRs gracefully.
+    """
     req = urllib.request.Request(url, headers={
         "Authorization": f"Bearer {pat}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     })
-    with urllib.request.urlopen(req) as resp:
-        return json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
 
 
 def github_get_list(url: str, pat: str) -> list:
-    """Fetch all pages from a GitHub API endpoint and return combined results."""
+    """Fetch all pages from a GitHub API endpoint and return combined results.
+
+    Returns empty list if the resource does not exist (404), allowing callers
+    to treat non-existent repos/PRs as having zero results.
+    """
     results = []
     while url:
         req = urllib.request.Request(url, headers={
@@ -48,16 +62,21 @@ def github_get_list(url: str, pat: str) -> list:
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         })
-        with urllib.request.urlopen(req) as resp:
-            results.extend(json.loads(resp.read()))
-            # Follow Link: <next_url>; rel="next" pagination
-            link_header = resp.headers.get("Link", "")
-            url = None
-            for part in link_header.split(","):
-                part = part.strip()
-                if 'rel="next"' in part:
-                    url = part.split(";")[0].strip().strip("<>")
-                    break
+        try:
+            with urllib.request.urlopen(req) as resp:
+                results.extend(json.loads(resp.read()))
+                # Follow Link: <next_url>; rel="next" pagination
+                link_header = resp.headers.get("Link", "")
+                url = None
+                for part in link_header.split(","):
+                    part = part.strip()
+                    if 'rel="next"' in part:
+                        url = part.split(";")[0].strip().strip("<>")
+                        break
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return results  # Return what we have (likely empty)
+            raise
     return results
 
 
@@ -98,9 +117,23 @@ def extract_sequence_instructions(comments: dict[str, str]) -> list[str]:
 
 
 def fetch_pr_state(pat: str, repo: str, pr_number: int) -> dict:
-    """Fetch PR state including merged status from GitHub API."""
+    """Fetch PR state including merged status from GitHub API.
+
+    Returns default "not found" state if the repo or PR does not exist (404).
+    """
     url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
     pr_data = github_get_object(url, pat)
+
+    # Handle non-existent repo/PR gracefully
+    if pr_data is None:
+        return {
+            "pr_state": "",
+            "pr_merged": "false",
+            "pr_merged_at": "",
+            "pr_closed_at": "",
+            "conclusion_state": "not_found",
+            "head_ref": "",
+        }
 
     state = pr_data.get("state", "open")
     merged = pr_data.get("merged", False)
