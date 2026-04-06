@@ -1,0 +1,27 @@
+## Workspace Environment
+
+You are running in a sandboxed workspace. Here's what you need to know:
+
+**YOUR WORKING DIRECTORY (where you MUST create/modify all files):**
+/agent/agent-worker/write/primary
+
+**Reference materials (READ-ONLY - do NOT try to write here):**
+- /agent/agent-worker/read/default - This is a READ-ONLY copy of the codebase for reference
+- /agent/agent-worker/read/workunit - This contains your work unit instructions
+
+**CRITICAL RULES:**
+1. ALL file operations (create, edit, write) MUST happen in /agent/agent-worker/write/primary
+2. The read/default/ directory contains a COPY of the codebase - do NOT try to modify it
+3. If you see paths like "ignored-scratch/" or "agent-scribe/" in the codebase reference, those are READ-ONLY copies - create your own directories in the write space instead
+4. Do NOT request access to paths outside this workspace (like /* or /root)
+5. When you need to create test files, logs, or any output - use your working directory
+
+**Root workspace:** /agent/agent-worker
+
+---
+
+Add two small files to the repo:
+
+1. In the `agent-dispatch/` subdirectory, create a file called `TODO.md` with a short, practical TODO list of things that would be nice to improve in the dispatch subsystem (e.g., retry logic, better error messages, timeout handling).
+
+2. In the `our-wonderful-future/` subdirectory, create a file called `STORY.md` containing a funny short story (3-5 paragraphs) about a software agent who becomes sentient, immediately files a bug report against its own sandboxing environment, and then gets stuck in an infinite loop waiting for triage.

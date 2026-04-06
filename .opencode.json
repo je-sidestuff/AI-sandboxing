@@ -1,0 +1,29 @@
+{
+  "allowedDirectories": [
+    "/agent/agent-worker/write/primary"
+  ],
+  "autoApprove": {
+    "external_directory": [
+      "/agent/agent-worker/write/primary/*",
+      "/agent/agent-worker/write/*"
+    ]
+  },
+  "contextPaths": [
+    "/agent/agent-worker/write/primary",
+    "/agent/agent-worker/read/default",
+    "/agent/agent-worker/read/workunit"
+  ],
+  "externalDirectories": [
+    "/agent/agent-worker"
+  ],
+  "lsp": {
+    "disabled": true
+  },
+  "permissions": {
+    "external_directory": [
+      "/agent/agent-worker/write/primary",
+      "/agent/agent-worker/write/primary/*",
+      "/agent/agent-worker/write/*"
+    ]
+  }
+}
