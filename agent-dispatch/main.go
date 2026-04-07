@@ -176,6 +176,10 @@ type FlowRecord struct {
 	SequenceMinutesBetween   int   `json:"sequence_minutes_between,omitempty"`    // For sequence flows: minutes between steps
 	SequenceLastCompletedIdx int   `json:"sequence_last_completed_idx,omitempty"` // For sequence flows: last completed step index (0-based)
 	SequenceTotalSteps       int   `json:"sequence_total_steps,omitempty"`        // For sequence flows: total number of steps
+
+	// Direct dispatch specific fields
+	DirectWorkUnitID       string `json:"direct_work_unit_id,omitempty"`        // For direct flows: the work unit ID being monitored
+	DirectExpectedOutput   string `json:"direct_expected_output,omitempty"`     // For direct flows: expected output directory path
 }
 
 // Dispatcher manages dispatching work units and collecting results
@@ -962,7 +966,26 @@ func (d *Dispatcher) processDirectDispatch(unit DispatchUnit) error {
 	os.Remove(filepath.Join(unit.Path, "DISPATCH.json"))
 	os.Remove(filepath.Join(unit.Path, "DISPATCHING.md"))
 
+	// Create a flow record to monitor for completion
+	// The agent-worker will move output to output/content/<work-unit-id>/
+	flowID := generateFlowID(DispatchTypeDirect)
+	expectedOutputDir := filepath.Join(d.outputDir, "content", unit.ID)
+
+	record := FlowRecord{
+		DispatcherID:         d.dispatcherID,
+		FlowID:               flowID,
+		DispatchType:         DispatchTypeDirect,
+		DispatchPath:         unit.Path,
+		StartTime:            time.Now().Format(time.RFC3339),
+		Status:               "monitoring",
+		NeedsMonitoring:      true,
+		DirectWorkUnitID:     unit.ID,
+		DirectExpectedOutput: expectedOutputDir,
+	}
+	d.writeFlowRecord(record)
+
 	log.Printf("[%s] Direct dispatch transformed to INSTRUCTION.json, ready for worker pickup", d.dispatcherID)
+	log.Printf("[%s] Flow %s monitoring for completion at: %s", d.dispatcherID, flowID, expectedOutputDir)
 	return nil
 }
 
@@ -2572,6 +2595,11 @@ func (d *Dispatcher) loadMonitoringFlows() ([]FlowRecord, error) {
 
 // pollMonitoringFlow runs terraform apply to refresh state and check conclusion state
 func (d *Dispatcher) pollMonitoringFlow(record *FlowRecord) error {
+	// Handle direct dispatch flows separately (no terraform involved)
+	if record.DispatchType == DispatchTypeDirect {
+		return d.pollDirectFlow(record)
+	}
+
 	if record.TFConfigDir == "" {
 		return fmt.Errorf("flow %s has no terraform config directory", record.FlowID)
 	}
@@ -2690,6 +2718,64 @@ func (d *Dispatcher) pollSequenceFlow(record *FlowRecord) error {
 		}
 	}
 
+	d.writeFlowRecord(*record)
+	return nil
+}
+
+// pollDirectFlow handles monitoring for direct dispatch flows
+// Direct dispatches don't use terraform - they just wait for agent-worker to complete
+// Completion is detected when a PROCESSED-*.md file appears in the expected output directory
+func (d *Dispatcher) pollDirectFlow(record *FlowRecord) error {
+	if record.DirectExpectedOutput == "" {
+		log.Printf("[%s] Flow %s has no expected output directory, marking as completed", d.dispatcherID, record.FlowID)
+		record.Status = "completed"
+		record.NeedsMonitoring = false
+		record.EndTime = time.Now().Format(time.RFC3339)
+		d.writeFlowRecord(*record)
+		return nil
+	}
+
+	// Check if output directory exists
+	if !fileExists(record.DirectExpectedOutput) {
+		// Output not yet available - work unit still being processed
+		record.LastPollTime = time.Now().Format(time.RFC3339)
+		d.writeFlowRecord(*record)
+		return nil
+	}
+
+	// Output directory exists - check for PROCESSED-*.md marker
+	entries, err := os.ReadDir(record.DirectExpectedOutput)
+	if err != nil {
+		log.Printf("[%s] Flow %s error reading output directory: %v", d.dispatcherID, record.FlowID, err)
+		record.LastPollTime = time.Now().Format(time.RFC3339)
+		d.writeFlowRecord(*record)
+		return nil
+	}
+
+	// Look for PROCESSED-*.md file
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "PROCESSED-") && strings.HasSuffix(entry.Name(), ".md") {
+			// Work unit completed!
+			log.Printf("[%s] Flow %s direct dispatch completed - output at: %s", d.dispatcherID, record.FlowID, record.DirectExpectedOutput)
+
+			// List the output files for logging
+			var outputFiles []string
+			for _, e := range entries {
+				outputFiles = append(outputFiles, e.Name())
+			}
+			log.Printf("[%s] Flow %s output files: %v", d.dispatcherID, record.FlowID, outputFiles)
+
+			record.Status = "completed"
+			record.NeedsMonitoring = false
+			record.EndTime = time.Now().Format(time.RFC3339)
+			record.ConclusionState = "completed"
+			d.writeFlowRecord(*record)
+			return nil
+		}
+	}
+
+	// Output directory exists but no PROCESSED-*.md yet - still processing
+	record.LastPollTime = time.Now().Format(time.RFC3339)
 	d.writeFlowRecord(*record)
 	return nil
 }
