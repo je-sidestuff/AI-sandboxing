@@ -1,4 +1,5 @@
 {
   "message": "This is an example heuristic message. Do a simple hello world task.",
+  "agent": "opencode",
   "model": "gemini-2.5-flash"
 }

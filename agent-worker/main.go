@@ -51,8 +51,8 @@ const (
 	ReportTypeMonthly = "monthly"
 )
 
-// Available agent presets (must match invoke-agent.sh presets)
-var availableAgents = []string{"copilot", "gemini", "claude", "opencode", "codex"}
+// Available agents (must match invoke-agent.sh agent definitions)
+var availableAgents = []string{"copilot", "gemini", "claude", "opencode", "codex", "grok"}
 
 // Exponential backoff levels for logging inactivity
 var backoffLevels = []time.Duration{
@@ -146,7 +146,11 @@ func NewAgentWorker() *AgentWorker {
 		recordsDir = defaultRecordsDir
 	}
 
-	currentAgent := os.Getenv("AGENT_PRESET")
+	// Support both AGENT_NAME (new) and AGENT_PRESET (deprecated) for backwards compatibility
+	currentAgent := os.Getenv("AGENT_NAME")
+	if currentAgent == "" {
+		currentAgent = os.Getenv("AGENT_PRESET")
+	}
 	if currentAgent == "" {
 		currentAgent = defaultAgent
 	}
@@ -1150,7 +1154,8 @@ func (w *AgentWorker) executeAgent(folderPath string, inst *Instruction, agent s
 	// Tools like opencode that need local config files should have them placed in
 	// the workspace read space if required.
 	cmd.Env = append(os.Environ(),
-		"AGENT_PRESET="+agent,
+		"AGENT_NAME="+agent,
+		"AGENT_PRESET="+agent, // backwards compatibility
 		"AGENT_RECORDS_PATH="+w.recordsDir,
 		"AGENT_FULL_AUTO="+fullAutoEnv,
 		"AGENT_ADD_DIRS="+workspace.RootPath,
@@ -1311,7 +1316,8 @@ func (w *AgentWorker) executeReportAgent(folderPath string, report *Report, agen
 	// credentials in ~/.claude/ or similar. The working directory (cmd.Dir) is set
 	// to the write space, but the agent can still access its normal config files.
 	cmd.Env = append(os.Environ(),
-		"AGENT_PRESET="+agent,
+		"AGENT_NAME="+agent,
+		"AGENT_PRESET="+agent, // backwards compatibility
 		"AGENT_RECORDS_PATH="+w.recordsDir,
 		"REPORT_TYPE="+report.Type,
 		"AGENT_ADD_DIRS="+workspace.RootPath,

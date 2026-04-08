@@ -13,53 +13,77 @@ set -uo pipefail
 # ============================================================================
 
 RECORDS_PATH="${AGENT_RECORDS_PATH:-/workspaces/agent-records/}"
-DEFAULT_PRESET="claude"
+DEFAULT_AGENT="claude"
 
 # ============================================================================
-# Agent Presets
+# Agent Definitions
 # ============================================================================
-# Each preset defines how to invoke a specific AI agent.
-# Format: PRESET_<name>_CMD contains the base command
-#         PRESET_<name>_PROMPT_FLAG contains the prompt flag
-#         PRESET_<name>_EXEC_ARGS contains extra args for execute mode
-#         PRESET_<name>_ADD_DIR_FLAG contains flag to add directories (if supported)
+# Each agent defines how to invoke a specific AI CLI tool.
+# An "agent" is the CLI tool (claude, opencode, gemini, etc.)
+# A "model" is the underlying LLM the agent uses (claude-opus-4-5-20251101, gpt-4o, etc.)
+#
+# Format: AGENT_<name>_CMD           - the base command to run
+#         AGENT_<name>_PROMPT_FLAG   - flag to pass prompts
+#         AGENT_<name>_EXEC_ARGS     - extra args for execute mode
+#         AGENT_<name>_ADD_DIR_FLAG  - flag to add directories (if supported)
+#         AGENT_<name>_MODEL_FLAG    - flag to specify model (if supported)
+#         AGENT_<name>_DEFAULT_MODEL - default model for this agent
+#         AGENT_<name>_MODELS        - space-separated list of available models
 
 # Copilot CLI
-PRESET_copilot_CMD="copilot"
-PRESET_copilot_PROMPT_FLAG="-p"
-PRESET_copilot_ADD_DIR_FLAG="--add-dir"
-PRESET_copilot_EXEC_ARGS="--allow-all-tools"
+AGENT_copilot_CMD="copilot"
+AGENT_copilot_PROMPT_FLAG="-p"
+AGENT_copilot_ADD_DIR_FLAG="--add-dir"
+AGENT_copilot_EXEC_ARGS="--allow-all-tools"
+AGENT_copilot_MODEL_FLAG=""
+AGENT_copilot_DEFAULT_MODEL=""
+AGENT_copilot_MODELS=""
 
 # Gemini CLI
-PRESET_gemini_CMD="gemini"
-PRESET_gemini_PROMPT_FLAG="-p"
-PRESET_gemini_ADD_DIR_FLAG=""
-PRESET_gemini_EXEC_ARGS="--sandbox=permissive"
+AGENT_gemini_CMD="gemini"
+AGENT_gemini_PROMPT_FLAG="-p"
+AGENT_gemini_ADD_DIR_FLAG=""
+AGENT_gemini_EXEC_ARGS="--sandbox=permissive"
+AGENT_gemini_MODEL_FLAG=""
+AGENT_gemini_DEFAULT_MODEL=""
+AGENT_gemini_MODELS=""
 
 # Claude Code
-PRESET_claude_CMD="claude"
-PRESET_claude_PROMPT_FLAG="-p"
-PRESET_claude_ADD_DIR_FLAG="--add-dir"
-PRESET_claude_EXEC_ARGS="--permission-mode acceptEdits"
-PRESET_claude_EXEC_ARGS_FULL_AUTO="--dangerously-skip-permissions"
+AGENT_claude_CMD="claude"
+AGENT_claude_PROMPT_FLAG="-p"
+AGENT_claude_ADD_DIR_FLAG="--add-dir"
+AGENT_claude_EXEC_ARGS="--permission-mode acceptEdits"
+AGENT_claude_EXEC_ARGS_FULL_AUTO="--dangerously-skip-permissions"
+AGENT_claude_MODEL_FLAG=""
+AGENT_claude_DEFAULT_MODEL=""
+AGENT_claude_MODELS=""
 
-# OpenCode
-PRESET_opencode_CMD="opencode run"
-PRESET_opencode_PROMPT_FLAG=""
-PRESET_opencode_ADD_DIR_FLAG=""
-PRESET_opencode_EXEC_ARGS=""
+# OpenCode - supports model selection via --model flag
+AGENT_opencode_CMD="opencode run"
+AGENT_opencode_PROMPT_FLAG=""
+AGENT_opencode_ADD_DIR_FLAG=""
+AGENT_opencode_EXEC_ARGS=""
+AGENT_opencode_MODEL_FLAG="--model"
+AGENT_opencode_DEFAULT_MODEL=""
+AGENT_opencode_MODELS="gpt-4.1 gpt-4.1-mini gpt-4.1-nano o4-mini o3 o3-mini claude-sonnet-4-20250514 claude-opus-4-5-20251101 gemini-2.5-pro gemini-2.5-flash"
 
 # Codex
-PRESET_codex_CMD="codex"
-PRESET_codex_PROMPT_FLAG="-p"
-PRESET_codex_ADD_DIR_FLAG=""
-PRESET_codex_EXEC_ARGS="--full-auto"
+AGENT_codex_CMD="codex"
+AGENT_codex_PROMPT_FLAG="-p"
+AGENT_codex_ADD_DIR_FLAG=""
+AGENT_codex_EXEC_ARGS="--full-auto"
+AGENT_codex_MODEL_FLAG=""
+AGENT_codex_DEFAULT_MODEL=""
+AGENT_codex_MODELS=""
 
 # Grok (xAI)
-PRESET_grok_CMD="grok"
-PRESET_grok_PROMPT_FLAG="-p"
-PRESET_grok_ADD_DIR_FLAG=""
-PRESET_grok_EXEC_ARGS=""
+AGENT_grok_CMD="grok"
+AGENT_grok_PROMPT_FLAG="-p"
+AGENT_grok_ADD_DIR_FLAG=""
+AGENT_grok_EXEC_ARGS=""
+AGENT_grok_MODEL_FLAG=""
+AGENT_grok_DEFAULT_MODEL=""
+AGENT_grok_MODELS=""
 
 # ============================================================================
 # Functions
@@ -67,52 +91,86 @@ PRESET_grok_EXEC_ARGS=""
 
 usage() {
     cat >&2 <<EOF
-Usage: $(basename "$0") [-e|-p] [-a <agent>] [-s] [-f <file>] <prompt...>
+Usage: $(basename "$0") [-e|-p] [-a <agent>] [-m <model>] [-s] [-f <file>] <prompt...>
+       $(basename "$0") --list-models <agent>
 
 Modes:
   -p  Prompt mode: ask questions, read-only context
   -e  Execute mode: allow tool use and file modifications
 
 Options:
-  -a <agent>  Select agent preset (default: $DEFAULT_PRESET)
+  -a <agent>  Select agent CLI tool (default: $DEFAULT_AGENT)
+  -m <model>  Select model for agent (if supported by agent)
   -s          Session context: indicates invocation is from a parent session
   -f <file>   Read prompt from file (use - for stdin)
 
-Available presets:
+Commands:
+  --list-models <agent>  List available models for an agent
+
+Available agents:
   copilot   GitHub Copilot CLI
   gemini    Google Gemini CLI
   claude    Claude Code (default)
-  opencode  OpenCode
+  opencode  OpenCode (supports model selection)
   codex     OpenAI Codex
   grok      xAI Grok
 
 Environment:
-  AGENT_RECORDS_PATH  Directory for records storage (default: $RECORDS_PATH)
-  AGENT_PRESET        Default agent preset (overrides built-in default)
-  AGENT_QUIET_CONTEXT Set to 1 to use minimal context prefix (path only)
-  AGENT_FULL_AUTO     Set to 1 for pre-approved execution (skips permission prompts)
-  AGENT_ADD_DIRS      Colon-separated list of additional directories to add via --add-dir
+  AGENT_RECORDS_PATH   Directory for records storage (default: $RECORDS_PATH)
+  AGENT_NAME           Default agent (overrides built-in default)
+  AGENT_MODEL          Default model for agent (if supported)
+  AGENT_QUIET_CONTEXT  Set to 1 to use minimal context prefix (path only)
+  AGENT_FULL_AUTO      Set to 1 for pre-approved execution (skips permission prompts)
+  AGENT_ADD_DIRS       Colon-separated list of additional directories to add via --add-dir
 
 EOF
     exit 1
 }
 
-get_preset_var() {
-    local preset="$1"
+get_agent_var() {
+    local agent="$1"
     local var="$2"
     local full_auto="${3:-false}"
 
     # If full_auto mode and requesting EXEC_ARGS, check for _FULL_AUTO variant first
     if [[ "$full_auto" == "true" && "$var" == "EXEC_ARGS" ]]; then
-        local full_auto_varname="PRESET_${preset}_${var}_FULL_AUTO"
+        local full_auto_varname="AGENT_${agent}_${var}_FULL_AUTO"
         if [[ -n "${!full_auto_varname:-}" ]]; then
             echo "${!full_auto_varname}"
             return
         fi
     fi
 
-    local varname="PRESET_${preset}_${var}"
+    local varname="AGENT_${agent}_${var}"
     echo "${!varname:-}"
+}
+
+# List available models for an agent
+list_agent_models() {
+    local agent="$1"
+    local models
+    models=$(get_agent_var "$agent" "MODELS")
+    local default_model
+    default_model=$(get_agent_var "$agent" "DEFAULT_MODEL")
+
+    if [[ -z "$models" ]]; then
+        echo "Agent '$agent' does not support model selection" >&2
+        return 1
+    fi
+
+    echo "Available models for '$agent':"
+    for model in $models; do
+        if [[ "$model" == "$default_model" ]]; then
+            echo "  $model (default)"
+        else
+            echo "  $model"
+        fi
+    done
+
+    if [[ -z "$default_model" ]]; then
+        echo ""
+        echo "No default model specified - agent uses its built-in default"
+    fi
 }
 
 format_duration() {
@@ -180,31 +238,39 @@ find_recent_group_id() {
 }
 
 build_agent_command() {
-    local preset="$1"
+    local agent="$1"
     local mode="$2"
     local call_pwd="$3"
     local records_path="$4"
     local full_auto="$5"
-    shift 5
+    local model="$6"
+    shift 6
 
     local cmd
-    cmd=$(get_preset_var "$preset" "CMD")
+    cmd=$(get_agent_var "$agent" "CMD")
     local prompt_flag
-    prompt_flag=$(get_preset_var "$preset" "PROMPT_FLAG")
+    prompt_flag=$(get_agent_var "$agent" "PROMPT_FLAG")
     local add_dir_flag
-    add_dir_flag=$(get_preset_var "$preset" "ADD_DIR_FLAG")
+    add_dir_flag=$(get_agent_var "$agent" "ADD_DIR_FLAG")
+    local model_flag
+    model_flag=$(get_agent_var "$agent" "MODEL_FLAG")
     local exec_args
     # Use full-auto exec args if full_auto is enabled
     local use_full_auto="false"
     [[ "$full_auto" == "1" ]] && use_full_auto="true"
-    exec_args=$(get_preset_var "$preset" "EXEC_ARGS" "$use_full_auto")
+    exec_args=$(get_agent_var "$agent" "EXEC_ARGS" "$use_full_auto")
 
     if [[ -z "$cmd" ]]; then
-        echo "Error: Unknown preset '$preset'" >&2
+        echo "Error: Unknown agent '$agent'" >&2
         return 1
     fi
 
     local args=()
+
+    # Add model flag if model is specified and agent supports it
+    if [[ -n "$model" && -n "$model_flag" ]]; then
+        args+=("$model_flag" "$model")
+    fi
 
     if [[ "$mode" == "-e" && -n "$exec_args" ]]; then
         read -ra exec_args_arr <<< "$exec_args"
@@ -256,7 +322,9 @@ build_agent_command() {
 # Main
 # ============================================================================
 
-PRESET="${AGENT_PRESET:-$DEFAULT_PRESET}"
+# Use AGENT_NAME env var, fall back to deprecated AGENT_PRESET for backwards compatibility
+AGENT="${AGENT_NAME:-${AGENT_PRESET:-$DEFAULT_AGENT}}"
+MODEL="${AGENT_MODEL:-}"
 MODE=""
 SESSION_CONTEXT="false"
 PROMPT_FILE=""
@@ -270,7 +338,12 @@ while [[ $# -gt 0 ]]; do
             ;;
         -a)
             [[ $# -lt 2 ]] && usage
-            PRESET="$2"
+            AGENT="$2"
+            shift 2
+            ;;
+        -m)
+            [[ $# -lt 2 ]] && usage
+            MODEL="$2"
             shift 2
             ;;
         -s|--session)
@@ -280,6 +353,11 @@ while [[ $# -gt 0 ]]; do
         --full-auto)
             FULL_AUTO="1"
             shift
+            ;;
+        --list-models)
+            [[ $# -lt 2 ]] && usage
+            list_agent_models "$2"
+            exit $?
             ;;
         -f)
             [[ $# -lt 2 ]] && usage
@@ -327,7 +405,7 @@ mkdir -p "$INVOCATION_DIR"
 gather_git_info "$CALL_PWD"
 
 # Use NUL-separated values to properly handle multi-line prompts
-mapfile -t -d '' cmd_parts < <(build_agent_command "$PRESET" "$MODE" "$CALL_PWD" "$RECORDS_PATH" "$FULL_AUTO" "$@")
+mapfile -t -d '' cmd_parts < <(build_agent_command "$AGENT" "$MODE" "$CALL_PWD" "$RECORDS_PATH" "$FULL_AUTO" "$MODEL" "$@")
 [[ ${#cmd_parts[@]} -eq 0 ]] && exit 1
 
 # Split the command into words (handles multi-word commands like "opencode run")
@@ -346,7 +424,8 @@ DURATION_STR=$(format_duration "$DURATION")
 
 cat > "$INVOCATION_DIR/metadata.txt" <<EOF
 Date/Time:  $NOW_HUMAN
-Agent:      $PRESET (${cmd_parts[0]})
+Agent:      $AGENT (${cmd_parts[0]})
+Model:      ${MODEL:-"(default)"}
 Mode:       $MODE
 Full Auto:  $FULL_AUTO
 Session:    $SESSION_CONTEXT

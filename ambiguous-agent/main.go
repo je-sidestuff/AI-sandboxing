@@ -19,8 +19,36 @@ import (
 const defaultRecordsPath = "/workspaces/agent-records/"
 const defaultAgent = "claude"
 
-// Available agent presets (must match invoke-agent.sh presets)
+// Available agents (must match invoke-agent.sh agent definitions)
 var availableAgents = []string{"copilot", "gemini", "claude", "opencode", "codex", "grok"}
+
+// AgentModelConfig defines model support for each agent
+// If Models is nil or empty, the agent does not support model selection
+type AgentModelConfig struct {
+	ModelFlag    string   // CLI flag to pass model (e.g., "--model")
+	DefaultModel string   // Default model, empty means agent's built-in default
+	Models       []string // Available models for this agent
+}
+
+// agentModelConfigs maps agent names to their model configuration
+// Only agents with non-empty Models support model selection
+var agentModelConfigs = map[string]AgentModelConfig{
+	"copilot":  {ModelFlag: "", DefaultModel: "", Models: nil},
+	"gemini":   {ModelFlag: "", DefaultModel: "", Models: nil},
+	"claude":   {ModelFlag: "", DefaultModel: "", Models: nil},
+	"opencode": {
+		ModelFlag:    "--model",
+		DefaultModel: "",
+		Models: []string{
+			"gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano",
+			"o4-mini", "o3", "o3-mini",
+			"claude-sonnet-4-20250514", "claude-opus-4-5-20251101",
+			"gemini-2.5-pro", "gemini-2.5-flash",
+		},
+	},
+	"codex": {ModelFlag: "", DefaultModel: "", Models: nil},
+	"grok":  {ModelFlag: "", DefaultModel: "", Models: nil},
+}
 
 // Agent colors for visual distinction
 var agentColors = map[string]lipgloss.Color{
@@ -228,10 +256,17 @@ func main() {
 	}
 
 	// Initialize current agent from environment or use default
-	currentAgent := os.Getenv("AGENT_PRESET")
+	// Support both AGENT_NAME (new) and AGENT_PRESET (deprecated) for backwards compatibility
+	currentAgent := os.Getenv("AGENT_NAME")
+	if currentAgent == "" {
+		currentAgent = os.Getenv("AGENT_PRESET")
+	}
 	if currentAgent == "" {
 		currentAgent = defaultAgent
 	}
+
+	// Initialize current model from environment (empty string means use agent's default)
+	currentModel := os.Getenv("AGENT_MODEL")
 
 	now := time.Now()
 	sessionID := fmt.Sprintf("%s_%d", now.Format("2006-01-02_15-04-05"), now.Unix())
@@ -254,6 +289,7 @@ func main() {
 
 	fmt.Println(sessionStyle.Render(fmt.Sprintf("● session: %s", sessionDir)))
 	fmt.Println(sessionStyle.Render(fmt.Sprintf("  agent: %s | 'set-agent <name>' to change | 'list-agents' for options", currentAgent)))
+	fmt.Println(sessionStyle.Render("  model: 'set-model <name>' to override | 'list-models' for options"))
 	fmt.Println(sessionStyle.Render("  type 'exit!' to end | 'agent <prompt>' to invoke AI"))
 	fmt.Println(sessionStyle.Render("  multi-line: trailing \\, unclosed quotes, or <<<DELIMITER"))
 	fmt.Println()
@@ -266,7 +302,7 @@ func main() {
 	completer := &ShellCompleter{cwd: &cwd}
 
 	rl, err := readline.NewEx(&readline.Config{
-		Prompt:          buildPrompt(cwd, currentAgent),
+		Prompt:          buildPrompt(cwd, currentAgent, currentModel),
 		HistoryFile:     readlineRecords,
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
@@ -299,7 +335,7 @@ func main() {
 		}
 
 		// Handle multi-line input (backslash, heredoc, unclosed quotes)
-		mainPrompt := buildPrompt(cwd, currentAgent)
+		mainPrompt := buildPrompt(cwd, currentAgent, currentModel)
 		line, err := readMultiLine(rl, initialLine, mainPrompt)
 		if err == readline.ErrInterrupt {
 			continue // User cancelled multi-line input
@@ -337,7 +373,7 @@ func main() {
 			} else {
 				oldCwd = cwd
 				cwd = newDir
-				rl.SetPrompt(buildPrompt(cwd, currentAgent))
+				rl.SetPrompt(buildPrompt(cwd, currentAgent, currentModel))
 			}
 			continue
 		}
@@ -355,7 +391,9 @@ func main() {
 			newAgent := strings.TrimSpace(strings.TrimPrefix(line, "set-agent "))
 			if isValidAgent(newAgent) {
 				currentAgent = newAgent
-				rl.SetPrompt(buildPrompt(cwd, currentAgent))
+				// Clear model when switching agents - the new agent may not support the old model
+				currentModel = ""
+				rl.SetPrompt(buildPrompt(cwd, currentAgent, currentModel))
 				fmt.Println(successStyle.Render(fmt.Sprintf("agent set to: %s", currentAgent)))
 			} else {
 				fmt.Println(errorStyle.Render(fmt.Sprintf("unknown agent: %s", newAgent)))
@@ -374,16 +412,42 @@ func main() {
 					color = lipgloss.Color("141") // Fallback purple
 				}
 				agentNameStyle := lipgloss.NewStyle().Foreground(color).Bold(true)
+				modelSupport := ""
+				if cfg, ok := agentModelConfigs[a]; ok && len(cfg.Models) > 0 {
+					modelSupport = " (supports model selection)"
+				}
 				if a == currentAgent {
-					fmt.Println(agentNameStyle.Render(fmt.Sprintf("  → %s (selected)", a)))
+					fmt.Println(agentNameStyle.Render(fmt.Sprintf("  → %s (selected)%s", a, modelSupport)))
 				} else {
-					fmt.Println(agentNameStyle.Render(fmt.Sprintf("    %s", a)))
+					fmt.Println(agentNameStyle.Render(fmt.Sprintf("    %s%s", a, modelSupport)))
 				}
 			}
 			continue
+		} else if strings.HasPrefix(line, "set-model ") {
+			newModel := strings.TrimSpace(strings.TrimPrefix(line, "set-model "))
+			if err := setModel(currentAgent, newModel); err != nil {
+				fmt.Println(errorStyle.Render(err.Error()))
+			} else {
+				currentModel = newModel
+				rl.SetPrompt(buildPrompt(cwd, currentAgent, currentModel))
+				fmt.Println(successStyle.Render(fmt.Sprintf("model set to: %s", currentModel)))
+			}
+			continue
+		} else if line == "set-model" {
+			fmt.Println(errorStyle.Render("usage: set-model <name>"))
+			fmt.Println(sessionStyle.Render("use 'list-models' to see available models for current agent"))
+			continue
+		} else if line == "clear-model" {
+			currentModel = ""
+			rl.SetPrompt(buildPrompt(cwd, currentAgent, currentModel))
+			fmt.Println(successStyle.Render("model cleared - using agent's default"))
+			continue
+		} else if line == "list-models" {
+			listModels(currentAgent, currentModel)
+			continue
 		} else if strings.HasPrefix(line, "agent ") {
 			prompt := strings.TrimPrefix(line, "agent ")
-			exitCode = runAgent(prompt, currentAgent, sessionDir, logFile)
+			exitCode = runAgent(prompt, currentAgent, currentModel, sessionDir, logFile)
 		} else if line == "agent" {
 			fmt.Println(errorStyle.Render("usage: agent <prompt>"))
 			continue
@@ -405,7 +469,7 @@ func main() {
 		newCwd, _ := os.Getwd()
 		if newCwd != cwd {
 			cwd = newCwd
-			rl.SetPrompt(buildPrompt(cwd, currentAgent))
+			rl.SetPrompt(buildPrompt(cwd, currentAgent, currentModel))
 		}
 	}
 }
@@ -418,6 +482,65 @@ func isValidAgent(name string) bool {
 		}
 	}
 	return false
+}
+
+// setModel validates and sets the model for the current agent
+// Returns an error if the agent doesn't support model selection or the model is invalid
+func setModel(agent string, model string) error {
+	cfg, ok := agentModelConfigs[agent]
+	if !ok || len(cfg.Models) == 0 {
+		return fmt.Errorf("agent '%s' does not support model selection", agent)
+	}
+
+	// Check if model is valid for this agent
+	valid := false
+	for _, m := range cfg.Models {
+		if m == model {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return fmt.Errorf("model '%s' is not available for agent '%s'", model, agent)
+	}
+
+	return nil
+}
+
+// listModels displays available models for an agent
+func listModels(agent string, currentModel string) {
+	cfg, ok := agentModelConfigs[agent]
+	if !ok || len(cfg.Models) == 0 {
+		fmt.Println(sessionStyle.Render(fmt.Sprintf("agent '%s' does not support model selection", agent)))
+		fmt.Println(sessionStyle.Render("the agent uses its built-in default model"))
+		return
+	}
+
+	// Get the agent's color
+	color := agentColors[agent]
+	if color == "" {
+		color = lipgloss.Color("141")
+	}
+	agentNameStyle := lipgloss.NewStyle().Foreground(color).Bold(true)
+
+	fmt.Println(sessionStyle.Render(fmt.Sprintf("available models for %s:", agentNameStyle.Render(agent))))
+
+	for _, m := range cfg.Models {
+		prefix := "    "
+		suffix := ""
+		if m == currentModel {
+			prefix = "  → "
+			suffix = " (selected)"
+		} else if m == cfg.DefaultModel {
+			suffix = " (default)"
+		}
+		fmt.Println(sessionStyle.Render(fmt.Sprintf("%s%s%s", prefix, m, suffix)))
+	}
+
+	if currentModel == "" {
+		fmt.Println()
+		fmt.Println(sessionStyle.Render("no model explicitly set - using agent's built-in default"))
+	}
 }
 
 // handleCd processes a cd command and returns the new directory or an error.
@@ -631,7 +754,7 @@ func abbreviatePath(path string, maxLen int) string {
 	return result
 }
 
-func buildPrompt(cwd string, agent string) string {
+func buildPrompt(cwd string, agent string, model string) string {
 	// Show abbreviated path (max 30 chars for the path portion)
 	dir := abbreviatePath(cwd, 30)
 	// Use agent-specific color if available
@@ -640,7 +763,15 @@ func buildPrompt(cwd string, agent string) string {
 		color = lipgloss.Color("141") // Fallback purple
 	}
 	agentPromptStyle := lipgloss.NewStyle().Foreground(color).Bold(true)
-	return agentPromptStyle.Render("["+agent+"]") + " " + promptStyle.Render(dir) + " › "
+
+	// Show [agent::model] if model is explicitly set, otherwise just [agent]
+	var promptLabel string
+	if model != "" {
+		promptLabel = "[" + agent + "::" + model + "]"
+	} else {
+		promptLabel = "[" + agent + "]"
+	}
+	return agentPromptStyle.Render(promptLabel) + " " + promptStyle.Render(dir) + " › "
 }
 
 func runCommand(cmdLine string, logFile *os.File) int {
@@ -685,7 +816,7 @@ func runCommand(cmdLine string, logFile *os.File) int {
 	return 0
 }
 
-func runAgent(prompt string, agent string, sessionDir string, logFile *os.File) int {
+func runAgent(prompt string, agent string, model string, sessionDir string, logFile *os.File) int {
 	// Find invoke-agent.sh relative to executable or use PATH
 	invokeScript := findInvokeScript()
 	if invokeScript == "" {
@@ -711,15 +842,43 @@ func runAgent(prompt string, agent string, sessionDir string, logFile *os.File) 
 
 	// Build command with invoke-agent.sh and parsed arguments
 	// Include -s flag to indicate this is invoked from a session context
-	// Include -a flag to specify the agent preset
-	cmdArgs := append([]string{mode, "-s", "-a", agent}, promptArgs...)
+	// Include -a flag to specify the agent
+	// Include -m flag to specify the model (if set)
+	cmdArgs := []string{mode, "-s", "-a", agent}
+	if model != "" {
+		cmdArgs = append(cmdArgs, "-m", model)
+	}
+	cmdArgs = append(cmdArgs, promptArgs...)
 	cmd := exec.Command(invokeScript, cmdArgs...)
-	cmd.Env = append(os.Environ(), "AGENT_RECORDS_PATH="+sessionDir, "AGENT_PRESET="+agent)
+
+	// Set environment variables for the agent
+	// AGENT_NAME is the new standard, AGENT_PRESET kept for backwards compatibility
+	env := append(os.Environ(),
+		"AGENT_RECORDS_PATH="+sessionDir,
+		"AGENT_NAME="+agent,
+		"AGENT_PRESET="+agent, // backwards compatibility
+	)
+	if model != "" {
+		env = append(env, "AGENT_MODEL="+model)
+	}
+	cmd.Env = env
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = io.MultiWriter(os.Stdout, logFile)
 	cmd.Stderr = io.MultiWriter(os.Stderr, logFile)
 
-	fmt.Println(sessionStyle.Render(fmt.Sprintf("invoking %s...", agent)))
+	// Build invoking message with agent in color and model info
+	color := agentColors[agent]
+	if color == "" {
+		color = lipgloss.Color("141")
+	}
+	agentNameStyle := lipgloss.NewStyle().Foreground(color).Bold(true)
+	var invokingMsg string
+	if model != "" {
+		invokingMsg = fmt.Sprintf("invoking %s with model %s...", agentNameStyle.Render(agent), model)
+	} else {
+		invokingMsg = fmt.Sprintf("invoking %s with default model...", agentNameStyle.Render(agent))
+	}
+	fmt.Println(sessionStyle.Render(invokingMsg))
 
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

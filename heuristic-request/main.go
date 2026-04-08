@@ -40,8 +40,8 @@ const (
 	defaultReadSpaceSource = "/workspaces/workspace/sandbox/AI-sandboxing"
 )
 
-// Available agent presets (must match invoke-agent.sh presets)
-var availableAgents = []string{"copilot", "gemini", "claude", "opencode", "codex"}
+// Available agents (must match invoke-agent.sh agent definitions)
+var availableAgents = []string{"copilot", "gemini", "claude", "opencode", "codex", "grok"}
 
 // Exponential backoff levels for logging inactivity
 var backoffLevels = []time.Duration{
@@ -57,13 +57,15 @@ type HeuristicUnit struct {
 	ID         string
 	Content    string
 	FolderPath string
-	Model      string
+	Agent      string // Optional agent override
+	Model      string // Optional model override (for agents that support it)
 }
 
 // HeuristicData is the format for HEURISTIC.json
 type HeuristicData struct {
 	Message string `json:"message"`
-	Model   string `json:"model"`
+	Agent   string `json:"agent,omitempty"` // Optional agent override
+	Model   string `json:"model,omitempty"` // Optional model override (for agents that support it)
 }
 
 // ExtractedFile represents a file extracted from agent output
@@ -117,7 +119,11 @@ func NewHeuristicWatcher() *HeuristicWatcher {
 		recordsDir = defaultRecordsDir
 	}
 
-	currentAgent := os.Getenv("AGENT_PRESET")
+	// Support both AGENT_NAME (new) and AGENT_PRESET (deprecated) for backwards compatibility
+	currentAgent := os.Getenv("AGENT_NAME")
+	if currentAgent == "" {
+		currentAgent = os.Getenv("AGENT_PRESET")
+	}
 	if currentAgent == "" {
 		currentAgent = defaultAgent
 	}
@@ -512,6 +518,7 @@ func (w *HeuristicWatcher) checkForHeuristicUnits() ([]HeuristicUnit, error) {
 					Path:       heuristicJSON,
 					ID:         entry.Name(),
 					Content:    data.Message,
+					Agent:      data.Agent,
 					Model:      data.Model,
 					FolderPath: folderPath,
 				})
@@ -533,7 +540,8 @@ func (w *HeuristicWatcher) checkForHeuristicUnits() ([]HeuristicUnit, error) {
 					ID:         entry.Name(),
 					Content:    string(content),
 					FolderPath: folderPath,
-					Model:      "", // No model from MD
+					Agent:      "", // No agent override from MD
+					Model:      "", // No model override from MD
 				})
 			}
 		}
@@ -714,7 +722,7 @@ func (w *HeuristicWatcher) processHeuristicUnit(unit HeuristicUnit) error {
 	prompt := w.buildHeuristicPrompt(unit.Content)
 
 	// Execute the agent in prompt-only mode
-	output, exitCode, err := w.executeAgent(unit.FolderPath, prompt, unit.Model)
+	output, exitCode, err := w.executeAgent(unit.FolderPath, prompt, unit.Agent, unit.Model)
 	if err != nil {
 		w.markHeuristicFailed(unit, err, startTime)
 		return err
@@ -787,7 +795,9 @@ func (w *HeuristicWatcher) processHeuristicUnit(unit HeuristicUnit) error {
 // executeAgent runs the agent in prompt-only mode and captures output
 // It prepares the isolated workspace at /agent/heuristic-request/, runs the AI as a
 // restricted user (in host mode), and copies output back to the work unit folder.
-func (w *HeuristicWatcher) executeAgent(folderPath, prompt, model string) (string, int, error) {
+// agentOverride: if non-empty and valid, use this agent instead of the default
+// modelOverride: if non-empty, pass this model to the agent (for agents that support it)
+func (w *HeuristicWatcher) executeAgent(folderPath, prompt, agentOverride, modelOverride string) (string, int, error) {
 	// Find invoke-agent.sh
 	invokeScript := findInvokeScript()
 	if invokeScript == "" {
@@ -795,8 +805,8 @@ func (w *HeuristicWatcher) executeAgent(folderPath, prompt, model string) (strin
 	}
 
 	agentToUse := w.currentAgent
-	if model != "" && isValidAgent(model) {
-		agentToUse = model
+	if agentOverride != "" && isValidAgent(agentOverride) {
+		agentToUse = agentOverride
 	}
 
 	// Prepare the workspace - copy work unit to /agent/heuristic-request/read/default/
@@ -824,7 +834,12 @@ func (w *HeuristicWatcher) executeAgent(folderPath, prompt, model string) (strin
 	}
 
 	// Build command arguments - ALWAYS use prompt mode (-p)
-	cmdArgs := []string{"-p", "-a", agentToUse, "-f", promptFile}
+	cmdArgs := []string{"-p", "-a", agentToUse}
+	// Add model flag if model override is specified
+	if modelOverride != "" {
+		cmdArgs = append(cmdArgs, "-m", modelOverride)
+	}
+	cmdArgs = append(cmdArgs, "-f", promptFile)
 
 	// Create command
 	cmd := exec.Command(invokeScript, cmdArgs...)
@@ -846,11 +861,16 @@ func (w *HeuristicWatcher) executeAgent(folderPath, prompt, model string) (strin
 	// Note: We do NOT override HOME here. Claude and other agents need access to their
 	// credentials in ~/.claude/ or similar. The working directory (cmd.Dir) is set
 	// to the write space, but the agent can still access its normal config files.
-	cmd.Env = append(os.Environ(),
-		"AGENT_PRESET="+agentToUse,
+	env := append(os.Environ(),
+		"AGENT_NAME="+agentToUse,
+		"AGENT_PRESET="+agentToUse, // backwards compatibility
 		"AGENT_RECORDS_PATH="+w.recordsDir,
 		"AGENT_ADD_DIRS="+workspace.RootPath,
 	)
+	if modelOverride != "" {
+		env = append(env, "AGENT_MODEL="+modelOverride)
+	}
+	cmd.Env = env
 
 	// In host mode, run as restricted user if configured and we're root
 	if os.Getuid() == 0 && w.agentUID != 0 {
