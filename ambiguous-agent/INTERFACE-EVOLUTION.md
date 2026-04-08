@@ -15,6 +15,7 @@ Its current surface area:
 | Interactive input | `readline` with multi-line support (backslash, heredoc, unclosed quotes) |
 | Agent invocation | `agent <prompt>` → forks `invoke-agent.sh` synchronously |
 | Agent switching | `set-agent <name>` updates prompt, passes `-a` flag to script |
+| Model selection | `set-model <name>` / `list-models` for supported agents (e.g., opencode, grok) |
 | Command execution | Arbitrary shell via `bash -c`, stdout/stderr tee'd to session log |
 | Session recording | JSONL log + per-invocation `metadata.txt` / `raw_output.txt` |
 | Tab completion | File-path completions via `ShellCompleter` |
