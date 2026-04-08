@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -34,8 +35,22 @@ type AgentModelConfig struct {
 // Only agents with non-empty Models support model selection
 var agentModelConfigs = map[string]AgentModelConfig{
 	"copilot": {ModelFlag: "", DefaultModel: "", Models: nil},
-	"gemini":  {ModelFlag: "", DefaultModel: "", Models: nil},
-	"claude":  {ModelFlag: "", DefaultModel: "", Models: nil},
+	"gemini": {
+		ModelFlag:    "--model",
+		DefaultModel: "",
+		Models: []string{
+			"gemini-2.5-pro", "gemini-2.5-flash",
+			"gemini-2.0-flash-001", "gemini-2.0-flash-lite",
+		},
+	},
+	"claude": {
+		ModelFlag:    "--model",
+		DefaultModel: "",
+		Models: []string{
+			"opus", "sonnet", "haiku",
+			"claude-opus-4-5-20251101", "claude-sonnet-4-20250514", "claude-sonnet-4-5-20250929",
+		},
+	},
 	"opencode": {
 		ModelFlag:    "--model",
 		DefaultModel: "",
@@ -50,8 +65,34 @@ var agentModelConfigs = map[string]AgentModelConfig{
 	"grok": {
 		ModelFlag:    "--model",
 		DefaultModel: "",
-		Models:       []string{"grok-beta", "grok-1", "grok-1.5"},
+		Models: []string{
+			"grok-4.20-multi-agent-0309", "grok-4.20-multi-agent", "grok-4.20-multi-agent-beta",
+			"grok-4.20-0309-reasoning", "grok-4.20-beta-0309", "grok-4.20-beta", "grok-beta",
+			"grok-4.20-0309-non-reasoning",
+			"grok-4-1-fast-reasoning", "grok-4-1-fast",
+			"grok-4-1-fast-non-reasoning",
+			"grok-4-fast-reasoning", "grok-4-fast",
+			"grok-4-fast-non-reasoning",
+			"grok-4-0709",
+			"grok-code-fast-1", "grok-code-fast",
+			"grok-3",
+			"grok-3-mini", "grok-3-mini-fast",
+		},
 	},
+}
+
+// CapabilityConfig defines a capability-to-model mapping
+// Capabilities allow automatic selection of the best agent/model for specific tasks
+type CapabilityConfig struct {
+	Agent string // Agent to use (e.g., "grok")
+	Model string // Model to use (e.g., "grok-code-fast-1")
+}
+
+// capabilityConfigs maps capability names to their agent/model configuration
+// Format: capability_name -> {agent, model}
+var capabilityConfigs = map[string]CapabilityConfig{
+	"image": {Agent: "grok", Model: "grok-code-fast-1"},
+	"cheap": {Agent: "opencode", Model: "google/gemini-2.5-flash"},
 }
 
 // Agent colors for visual distinction
@@ -451,9 +492,11 @@ func main() {
 			continue
 		} else if strings.HasPrefix(line, "agent ") {
 			prompt := strings.TrimPrefix(line, "agent ")
-			exitCode = runAgent(prompt, currentAgent, currentModel, sessionDir, logFile)
+			// Parse -c flag for capability-based model selection
+			capability, prompt := extractCapability(prompt)
+			exitCode = runAgent(prompt, currentAgent, currentModel, capability, sessionDir, logFile)
 		} else if line == "agent" {
-			fmt.Println(errorStyle.Render("usage: agent <prompt>"))
+			fmt.Println(errorStyle.Render("usage: agent [-c <capability>] <prompt>"))
 			continue
 		} else {
 			exitCode = runCommand(line, logFile)
@@ -488,6 +531,16 @@ func isValidAgent(name string) bool {
 	return false
 }
 
+// getCapabilityNames returns a comma-separated list of available capability names
+func getCapabilityNames() string {
+	names := make([]string, 0, len(capabilityConfigs))
+	for name := range capabilityConfigs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
 // setModel validates and sets the model for the current agent
 // Returns an error if the agent doesn't support model selection or the model is invalid
 func setModel(agent string, model string) error {
@@ -506,12 +559,16 @@ func setModel(agent string, model string) error {
 			// Fallback to static config if command fails
 			models = cfg.Models
 		} else {
-			// Parse output, assuming one model per line
-			lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-			for _, line := range lines {
-				line = strings.TrimSpace(line)
-				if line != "" {
-					models = append(models, line)
+			if agent == "grok" {
+				models = parseGrokModels(string(output))
+			} else {
+				// Parse output, assuming one model per line
+				lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					if line != "" {
+						models = append(models, line)
+					}
 				}
 			}
 		}
@@ -554,12 +611,16 @@ func listModels(agent string, currentModel string) {
 			fmt.Println(sessionStyle.Render("failed to query models from tool, using static list"))
 			models = cfg.Models
 		} else {
-			// Parse output, assuming one model per line
-			lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-			for _, line := range lines {
-				line = strings.TrimSpace(line)
-				if line != "" {
-					models = append(models, line)
+			if agent == "grok" {
+				models = parseGrokModels(string(output))
+			} else {
+				// Parse output, assuming one model per line
+				lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					if line != "" {
+						models = append(models, line)
+					}
 				}
 			}
 		}
@@ -873,7 +934,19 @@ func runCommand(cmdLine string, logFile *os.File) int {
 	return 0
 }
 
-func runAgent(prompt string, agent string, model string, sessionDir string, logFile *os.File) int {
+func runAgent(prompt string, agent string, model string, capability string, sessionDir string, logFile *os.File) int {
+	// If capability is specified, override agent and model
+	if capability != "" {
+		if cfg, ok := capabilityConfigs[capability]; ok {
+			agent = cfg.Agent
+			model = cfg.Model
+		} else {
+			fmt.Println(errorStyle.Render(fmt.Sprintf("unknown capability: %s", capability)))
+			fmt.Println(sessionStyle.Render(fmt.Sprintf("available capabilities: %s", getCapabilityNames())))
+			return 1
+		}
+	}
+
 	// Find invoke-agent.sh relative to executable or use PATH
 	invokeScript := findInvokeScript()
 	if invokeScript == "" {
@@ -924,18 +997,34 @@ func runAgent(prompt string, agent string, model string, sessionDir string, logF
 	cmd.Stderr = io.MultiWriter(os.Stderr, logFile)
 
 	// Build invoking message with agent in color and model info
+	// Use sessionStyle for grey text, agent color for agent name (and specific model)
 	color := agentColors[agent]
 	if color == "" {
 		color = lipgloss.Color("141")
 	}
 	agentNameStyle := lipgloss.NewStyle().Foreground(color).Bold(true)
-	var invokingMsg string
+
+	// Use lipgloss.JoinHorizontal to properly join styled strings
+	// This handles ANSI escape sequence transitions correctly
 	if model != "" {
-		invokingMsg = fmt.Sprintf("invoking %s with model %s...", agentNameStyle.Render(agent), model)
+		// Specific model selected - show model in agent color
+		msg := lipgloss.JoinHorizontal(lipgloss.Top,
+			sessionStyle.Render("invoking "),
+			agentNameStyle.Render(agent),
+			sessionStyle.Render(" with model "),
+			agentNameStyle.Render(model),
+			sessionStyle.Render("..."),
+		)
+		fmt.Println(msg)
 	} else {
-		invokingMsg = fmt.Sprintf("invoking %s with default model...", agentNameStyle.Render(agent))
+		// Default model - all grey except agent name
+		msg := lipgloss.JoinHorizontal(lipgloss.Top,
+			sessionStyle.Render("invoking "),
+			agentNameStyle.Render(agent),
+			sessionStyle.Render(" with default model..."),
+		)
+		fmt.Println(msg)
 	}
-	fmt.Println(sessionStyle.Render(invokingMsg))
 
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -949,6 +1038,25 @@ func runAgent(prompt string, agent string, model string, sessionDir string, logF
 
 	fmt.Println(successStyle.Render("agent completed"))
 	return 0
+}
+
+// extractCapability parses the -c flag from the prompt and returns (capability, remaining_prompt)
+// If -c is not present, returns ("", original_prompt)
+func extractCapability(input string) (string, string) {
+	args := parseArgs(input)
+	var capability string
+	var remaining []string
+
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-c" && i+1 < len(args) {
+			capability = args[i+1]
+			i++ // skip the capability value
+		} else {
+			remaining = append(remaining, args[i])
+		}
+	}
+
+	return capability, strings.Join(remaining, " ")
 }
 
 // parseArgs splits a string into arguments, respecting quoted strings
@@ -981,6 +1089,50 @@ func parseArgs(input string) []string {
 	}
 
 	return args
+}
+
+// stripAnsiCodes removes ANSI escape sequences from a string
+func stripAnsiCodes(s string) string {
+	ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*[mG]`)
+	return ansiRegex.ReplaceAllString(s, "")
+}
+
+// parseGrokModels parses the output of 'grok models' command.
+// Format:
+// model-name — description
+//
+//	details line
+//	aliases: alias1 alias2 (optional)
+func parseGrokModels(output string) []string {
+	var models []string
+	lines := strings.Split(output, "\n")
+	i := 0
+	for i < len(lines) {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || !strings.Contains(line, " — ") {
+			i++
+			continue
+		}
+		parts := strings.SplitN(line, " — ", 2)
+		if len(parts) == 2 {
+			modelName := stripAnsiCodes(strings.TrimSpace(parts[0]))
+			models = append(models, modelName)
+			i++ // move past model line
+			if i < len(lines) {
+				// skip details line
+				i++
+			}
+			if i < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[i]), "aliases: ") {
+				aliasesStr := strings.TrimSpace(strings.TrimPrefix(lines[i], "aliases: "))
+				aliases := strings.Fields(aliasesStr)
+				models = append(models, aliases...)
+				i++
+			}
+		} else {
+			i++
+		}
+	}
+	return models
 }
 
 func findInvokeScript() string {

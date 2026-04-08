@@ -60,15 +60,15 @@ The `AGENT_PRESET` environment variable and related code treated these as interc
 
 | Agent | Model Flag | Available Models |
 |-------|-----------|------------------|
+| claude | `--model` | opus, sonnet, haiku, claude-opus-4-5-20251101, claude-sonnet-4-20250514, claude-sonnet-4-5-20250929 |
+| gemini | `--model` | gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash, gemini-2.0-flash-lite |
 | opencode | `--model` | openai/gpt-4.1, openai/gpt-4.1-mini, openai/gpt-4.1-nano, openai/o4-mini, openai/o3, openai/o3-mini, anthropic/claude-sonnet-4-20250514, anthropic/claude-opus-4-5-20251101, google/gemini-2.5-pro, google/gemini-2.5-flash |
+| grok | `--model` | grok-4.20-multi-agent, grok-4.20-reasoning, grok-4-fast, grok-3, grok-3-mini (+ aliases) |
 
 ### Agents Without Model Selection (Yet)
 
-- `claude` - Uses Claude Code's internal model selection
 - `copilot` - Uses GitHub Copilot's default
-- `gemini` - Uses Gemini CLI's default
 - `codex` - Uses Codex's default
-- `grok` - Uses Grok's default
 
 ## Environment Variables
 
@@ -84,11 +84,12 @@ The `AGENT_PRESET` environment variable and related code treated these as interc
 
 ## Next Steps
 
-1. **Add model selection support to other agents** - Research CLI flags for claude, gemini, copilot
-2. **Model validation** - Validate model names against available list before invocation
-3. **Default model configuration** - Allow setting default models per agent in system config
-4. **Model usage tracking** - Add model field to CommandRecord in session.jsonl
-5. **Model cost tracking** - Track estimated costs per model for billing/budgeting
+1. ~~**Add model selection support to other agents** - Research CLI flags for claude, gemini, copilot~~ ✓ Done for claude and gemini
+2. **Add model selection support to copilot** - Research CLI flags for GitHub Copilot
+3. **Model validation** - Validate model names against available list before invocation
+4. **Default model configuration** - Allow setting default models per agent in system config
+5. **Model usage tracking** - Add model field to CommandRecord in session.jsonl
+6. **Model cost tracking** - Track estimated costs per model for billing/budgeting
 
 ## Usage Examples
 

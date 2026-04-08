@@ -39,24 +39,24 @@ AGENT_copilot_MODEL_FLAG=""
 AGENT_copilot_DEFAULT_MODEL=""
 AGENT_copilot_MODELS=""
 
-# Gemini CLI
+# Gemini CLI - supports model selection via --model flag
 AGENT_gemini_CMD="gemini"
 AGENT_gemini_PROMPT_FLAG="-p"
 AGENT_gemini_ADD_DIR_FLAG=""
 AGENT_gemini_EXEC_ARGS="--sandbox=permissive"
-AGENT_gemini_MODEL_FLAG=""
+AGENT_gemini_MODEL_FLAG="--model"
 AGENT_gemini_DEFAULT_MODEL=""
-AGENT_gemini_MODELS=""
+AGENT_gemini_MODELS="gemini-2.5-pro gemini-2.5-flash gemini-2.0-flash-001 gemini-2.0-flash-lite"
 
-# Claude Code
+# Claude Code - supports model selection via --model flag
 AGENT_claude_CMD="claude"
 AGENT_claude_PROMPT_FLAG="-p"
 AGENT_claude_ADD_DIR_FLAG="--add-dir"
 AGENT_claude_EXEC_ARGS="--permission-mode acceptEdits"
 AGENT_claude_EXEC_ARGS_FULL_AUTO="--dangerously-skip-permissions"
-AGENT_claude_MODEL_FLAG=""
+AGENT_claude_MODEL_FLAG="--model"
 AGENT_claude_DEFAULT_MODEL=""
-AGENT_claude_MODELS=""
+AGENT_claude_MODELS="opus sonnet haiku claude-opus-4-5-20251101 claude-sonnet-4-20250514 claude-sonnet-4-5-20250929"
 
 # OpenCode - supports model selection via --model flag
 AGENT_opencode_CMD="opencode run"
@@ -83,7 +83,22 @@ AGENT_grok_ADD_DIR_FLAG=""
 AGENT_grok_EXEC_ARGS=""
 AGENT_grok_MODEL_FLAG="--model"
 AGENT_grok_DEFAULT_MODEL=""
-AGENT_grok_MODELS="grok-beta grok-1 grok-1.5"
+AGENT_grok_MODELS="grok-4.20-multi-agent-0309 grok-4.20-multi-agent grok-4.20-multi-agent-beta grok-4.20-0309-reasoning grok-4.20-beta-0309 grok-4.20-beta grok-beta grok-4.20-0309-non-reasoning grok-4-1-fast-reasoning grok-4-1-fast grok-4-1-fast-non-reasoning grok-4-fast-reasoning grok-4-fast grok-4-fast-non-reasoning grok-4-0709 grok-code-fast-1 grok-code-fast grok-3 grok-3-mini grok-3-mini-fast"
+
+# ============================================================================
+# Capability Definitions
+# ============================================================================
+# Capabilities map task types to optimal agent/model combinations.
+# Format: CAPABILITY_<name>_AGENT  - the agent to use
+#         CAPABILITY_<name>_MODEL  - the model to use
+
+# Image capability - uses grok with vision model
+CAPABILITY_image_AGENT="grok"
+CAPABILITY_image_MODEL="grok-code-fast-1"
+
+# Cheap capability - uses fast/inexpensive model for simple tasks
+CAPABILITY_cheap_AGENT="opencode"
+CAPABILITY_cheap_MODEL="google/gemini-2.5-flash"
 
 # ============================================================================
 # Functions
@@ -91,21 +106,24 @@ AGENT_grok_MODELS="grok-beta grok-1 grok-1.5"
 
 usage() {
     cat >&2 <<EOF
-Usage: $(basename "$0") [-e|-p] [-a <agent>] [-m <model>] [-s] [-f <file>] <prompt...>
+Usage: $(basename "$0") [-e|-p] [-a <agent>] [-m <model>] [-c <capability>] [-s] [-f <file>] <prompt...>
        $(basename "$0") --list-models <agent>
+       $(basename "$0") --list-capabilities
 
 Modes:
   -p  Prompt mode: ask questions, read-only context
   -e  Execute mode: allow tool use and file modifications
 
 Options:
-  -a <agent>  Select agent CLI tool (default: $DEFAULT_AGENT)
-  -m <model>  Select model for agent (if supported by agent)
-  -s          Session context: indicates invocation is from a parent session
-  -f <file>   Read prompt from file (use - for stdin)
+  -a <agent>       Select agent CLI tool (default: $DEFAULT_AGENT)
+  -m <model>       Select model for agent (if supported by agent)
+  -c <capability>  Select capability (auto-selects best agent/model for the task)
+  -s               Session context: indicates invocation is from a parent session
+  -f <file>        Read prompt from file (use - for stdin)
 
 Commands:
   --list-models <agent>  List available models for an agent
+  --list-capabilities    List available capabilities
 
 Available agents:
   copilot   GitHub Copilot CLI
@@ -143,6 +161,20 @@ get_agent_var() {
 
     local varname="AGENT_${agent}_${var}"
     echo "${!varname:-}"
+}
+
+# Get capability configuration
+get_capability_var() {
+    local capability="$1"
+    local var="$2"
+    local varname="CAPABILITY_${capability}_${var}"
+    echo "${!varname:-}"
+}
+
+# List available capabilities
+list_capabilities() {
+    echo "Available capabilities:"
+    echo "  image   - Image understanding (uses grok::grok-code-fast-1)"
 }
 
 # List available models for an agent
@@ -349,6 +381,7 @@ build_agent_command() {
 # Use AGENT_NAME env var, fall back to deprecated AGENT_PRESET for backwards compatibility
 AGENT="${AGENT_NAME:-${AGENT_PRESET:-$DEFAULT_AGENT}}"
 MODEL="${AGENT_MODEL:-}"
+CAPABILITY=""
 MODE=""
 SESSION_CONTEXT="false"
 PROMPT_FILE=""
@@ -370,6 +403,11 @@ while [[ $# -gt 0 ]]; do
             MODEL="$2"
             shift 2
             ;;
+        -c)
+            [[ $# -lt 2 ]] && usage
+            CAPABILITY="$2"
+            shift 2
+            ;;
         -s|--session)
             SESSION_CONTEXT="true"
             shift
@@ -382,6 +420,10 @@ while [[ $# -gt 0 ]]; do
             [[ $# -lt 2 ]] && usage
             list_agent_models "$2"
             exit $?
+            ;;
+        --list-capabilities)
+            list_capabilities
+            exit 0
             ;;
         -f)
             [[ $# -lt 2 ]] && usage
@@ -398,6 +440,19 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "$MODE" ]] && usage
+
+# Apply capability override if specified
+if [[ -n "$CAPABILITY" ]]; then
+    CAP_AGENT=$(get_capability_var "$CAPABILITY" "AGENT")
+    CAP_MODEL=$(get_capability_var "$CAPABILITY" "MODEL")
+    if [[ -z "$CAP_AGENT" ]]; then
+        echo "Error: Unknown capability '$CAPABILITY'" >&2
+        echo "Use --list-capabilities to see available capabilities" >&2
+        exit 1
+    fi
+    AGENT="$CAP_AGENT"
+    MODEL="$CAP_MODEL"
+fi
 
 # Read prompt from file if -f was specified
 if [[ -n "$PROMPT_FILE" ]]; then
@@ -450,6 +505,7 @@ cat > "$INVOCATION_DIR/metadata.txt" <<EOF
 Date/Time:  $NOW_HUMAN
 Agent:      $AGENT (${cmd_parts[0]})
 Model:      ${MODEL:-"(default)"}
+Capability: ${CAPABILITY:-"(none)"}
 Mode:       $MODE
 Full Auto:  $FULL_AUTO
 Session:    $SESSION_CONTEXT
