@@ -60,7 +60,7 @@ The `AGENT_PRESET` environment variable and related code treated these as interc
 
 | Agent | Model Flag | Available Models |
 |-------|-----------|------------------|
-| opencode | `--model` | gpt-4.1, gpt-4.1-mini, gpt-4.1-nano, o4-mini, o3, o3-mini, claude-sonnet-4-20250514, claude-opus-4-5-20251101, gemini-2.5-pro, gemini-2.5-flash |
+| opencode | `--model` | openai/gpt-4.1, openai/gpt-4.1-mini, openai/gpt-4.1-nano, openai/o4-mini, openai/o3, openai/o3-mini, anthropic/claude-sonnet-4-20250514, anthropic/claude-opus-4-5-20251101, google/gemini-2.5-pro, google/gemini-2.5-flash |
 
 ### Agents Without Model Selection (Yet)
 
@@ -98,10 +98,10 @@ The `AGENT_PRESET` environment variable and related code treated these as interc
 # List available models for opencode
 list-models
 
-# Set explicit model
-set-model gpt-4.1
+# Set explicit model (must include provider prefix)
+set-model openai/gpt-4.1
 
-# Prompt now shows [opencode::gpt-4.1]
+# Prompt now shows [opencode::openai/gpt-4.1]
 
 # Clear model override
 clear-model
@@ -115,7 +115,7 @@ clear-model
 {
   "message": "Analyze this code",
   "agent": "opencode",
-  "model": "claude-opus-4-5-20251101"
+  "model": "anthropic/claude-opus-4-5-20251101"
 }
 ```
 
@@ -125,8 +125,8 @@ clear-model
 # List models
 invoke-agent.sh --list-models opencode
 
-# Invoke with specific model
-invoke-agent.sh -e -a opencode -m gpt-4.1 "Write a hello world program"
+# Invoke with specific model (must include provider prefix)
+invoke-agent.sh -e -a opencode -m openai/gpt-4.1 "Write a hello world program"
 ```
 
 ## Breaking Changes

@@ -33,17 +33,17 @@ type AgentModelConfig struct {
 // agentModelConfigs maps agent names to their model configuration
 // Only agents with non-empty Models support model selection
 var agentModelConfigs = map[string]AgentModelConfig{
-	"copilot":  {ModelFlag: "", DefaultModel: "", Models: nil},
-	"gemini":   {ModelFlag: "", DefaultModel: "", Models: nil},
-	"claude":   {ModelFlag: "", DefaultModel: "", Models: nil},
+	"copilot": {ModelFlag: "", DefaultModel: "", Models: nil},
+	"gemini":  {ModelFlag: "", DefaultModel: "", Models: nil},
+	"claude":  {ModelFlag: "", DefaultModel: "", Models: nil},
 	"opencode": {
 		ModelFlag:    "--model",
 		DefaultModel: "",
 		Models: []string{
-			"gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano",
-			"o4-mini", "o3", "o3-mini",
-			"claude-sonnet-4-20250514", "claude-opus-4-5-20251101",
-			"gemini-2.5-pro", "gemini-2.5-flash",
+			"openai/gpt-4.1", "openai/gpt-4.1-mini", "openai/gpt-4.1-nano",
+			"openai/o4-mini", "openai/o3", "openai/o3-mini",
+			"anthropic/claude-sonnet-4-20250514", "anthropic/claude-opus-4-5-20251101",
+			"google/gemini-2.5-pro", "google/gemini-2.5-flash",
 		},
 	},
 	"codex": {ModelFlag: "", DefaultModel: "", Models: nil},
@@ -492,9 +492,32 @@ func setModel(agent string, model string) error {
 		return fmt.Errorf("agent '%s' does not support model selection", agent)
 	}
 
+	var models []string
+
+	if agent == "opencode" {
+		// Query models dynamically from the tool
+		cmd := exec.Command("opencode", "models")
+		output, err := cmd.Output()
+		if err != nil {
+			// Fallback to static config if command fails
+			models = cfg.Models
+		} else {
+			// Parse output, assuming one model per line
+			lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if line != "" {
+					models = append(models, line)
+				}
+			}
+		}
+	} else {
+		models = cfg.Models
+	}
+
 	// Check if model is valid for this agent
 	valid := false
-	for _, m := range cfg.Models {
+	for _, m := range models {
 		if m == model {
 			valid = true
 			break
@@ -510,7 +533,37 @@ func setModel(agent string, model string) error {
 // listModels displays available models for an agent
 func listModels(agent string, currentModel string) {
 	cfg, ok := agentModelConfigs[agent]
-	if !ok || len(cfg.Models) == 0 {
+	if !ok {
+		fmt.Println(sessionStyle.Render(fmt.Sprintf("agent '%s' does not support model selection", agent)))
+		fmt.Println(sessionStyle.Render("the agent uses its built-in default model"))
+		return
+	}
+
+	var models []string
+
+	if agent == "opencode" {
+		// Query models dynamically from the tool
+		cmd := exec.Command("opencode", "models")
+		output, err := cmd.Output()
+		if err != nil {
+			// Fallback to static config if command fails
+			fmt.Println(sessionStyle.Render("failed to query models from tool, using static list"))
+			models = cfg.Models
+		} else {
+			// Parse output, assuming one model per line
+			lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if line != "" {
+					models = append(models, line)
+				}
+			}
+		}
+	} else {
+		models = cfg.Models
+	}
+
+	if len(models) == 0 {
 		fmt.Println(sessionStyle.Render(fmt.Sprintf("agent '%s' does not support model selection", agent)))
 		fmt.Println(sessionStyle.Render("the agent uses its built-in default model"))
 		return
@@ -525,7 +578,7 @@ func listModels(agent string, currentModel string) {
 
 	fmt.Println(sessionStyle.Render(fmt.Sprintf("available models for %s:", agentNameStyle.Render(agent))))
 
-	for _, m := range cfg.Models {
+	for _, m := range models {
 		prefix := "    "
 		suffix := ""
 		if m == currentModel {
@@ -1021,7 +1074,7 @@ func readMultiLine(rl *readline.Instance, initialLine string, mainPrompt string)
 
 // checkContinuation determines if the line needs continuation.
 // Returns (needsContinuation, quoteChar) where quoteChar is the unclosed quote
-// character ('"' or '\'') or 0 if continuation is due to backslash.
+// character ('"' or '\”) or 0 if continuation is due to backslash.
 func checkContinuation(line string) (bool, rune) {
 	// Check for trailing backslash (not escaped)
 	trimmed := strings.TrimRight(line, " \t")

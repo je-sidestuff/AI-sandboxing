@@ -65,7 +65,7 @@ AGENT_opencode_ADD_DIR_FLAG=""
 AGENT_opencode_EXEC_ARGS=""
 AGENT_opencode_MODEL_FLAG="--model"
 AGENT_opencode_DEFAULT_MODEL=""
-AGENT_opencode_MODELS="gpt-4.1 gpt-4.1-mini gpt-4.1-nano o4-mini o3 o3-mini claude-sonnet-4-20250514 claude-opus-4-5-20251101 gemini-2.5-pro gemini-2.5-flash"
+AGENT_opencode_MODELS="openai/gpt-4.1 openai/gpt-4.1-mini openai/gpt-4.1-nano openai/o4-mini openai/o3 openai/o3-mini anthropic/claude-sonnet-4-20250514 anthropic/claude-opus-4-5-20251101 google/gemini-2.5-pro google/gemini-2.5-flash"
 
 # Codex
 AGENT_codex_CMD="codex"
@@ -149,7 +149,22 @@ get_agent_var() {
 list_agent_models() {
     local agent="$1"
     local models
-    models=$(get_agent_var "$agent" "MODELS")
+    local dynamic_models=""
+
+    if [[ "$agent" == "opencode" ]]; then
+        # Query models dynamically from the tool
+        if command -v opencode >/dev/null 2>&1; then
+            dynamic_models=$(opencode models 2>/dev/null)
+            if [[ $? -eq 0 ]]; then
+                models="$dynamic_models"
+            fi
+        fi
+    fi
+
+    if [[ -z "$models" ]]; then
+        models=$(get_agent_var "$agent" "MODELS")
+    fi
+
     local default_model
     default_model=$(get_agent_var "$agent" "DEFAULT_MODEL")
 
@@ -159,7 +174,8 @@ list_agent_models() {
     fi
 
     echo "Available models for '$agent':"
-    for model in $models; do
+    echo "$models" | while IFS= read -r model; do
+        [[ -z "$model" ]] && continue
         if [[ "$model" == "$default_model" ]]; then
             echo "  $model (default)"
         else
