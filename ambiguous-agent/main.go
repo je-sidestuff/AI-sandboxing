@@ -47,7 +47,11 @@ var agentModelConfigs = map[string]AgentModelConfig{
 		},
 	},
 	"codex": {ModelFlag: "", DefaultModel: "", Models: nil},
-	"grok":  {ModelFlag: "", DefaultModel: "", Models: nil},
+	"grok": {
+		ModelFlag:    "--model",
+		DefaultModel: "",
+		Models:       []string{"grok-beta", "grok-1", "grok-1.5"},
+	},
 }
 
 // Agent colors for visual distinction
@@ -494,9 +498,9 @@ func setModel(agent string, model string) error {
 
 	var models []string
 
-	if agent == "opencode" {
+	if agent == "opencode" || agent == "grok" {
 		// Query models dynamically from the tool
-		cmd := exec.Command("opencode", "models")
+		cmd := exec.Command(agent, "models")
 		output, err := cmd.Output()
 		if err != nil {
 			// Fallback to static config if command fails
@@ -541,9 +545,9 @@ func listModels(agent string, currentModel string) {
 
 	var models []string
 
-	if agent == "opencode" {
+	if agent == "opencode" || agent == "grok" {
 		// Query models dynamically from the tool
-		cmd := exec.Command("opencode", "models")
+		cmd := exec.Command(agent, "models")
 		output, err := cmd.Output()
 		if err != nil {
 			// Fallback to static config if command fails

@@ -81,9 +81,9 @@ AGENT_grok_CMD="grok"
 AGENT_grok_PROMPT_FLAG="-p"
 AGENT_grok_ADD_DIR_FLAG=""
 AGENT_grok_EXEC_ARGS=""
-AGENT_grok_MODEL_FLAG=""
+AGENT_grok_MODEL_FLAG="--model"
 AGENT_grok_DEFAULT_MODEL=""
-AGENT_grok_MODELS=""
+AGENT_grok_MODELS="grok-beta grok-1 grok-1.5"
 
 # ============================================================================
 # Functions
@@ -155,6 +155,14 @@ list_agent_models() {
         # Query models dynamically from the tool
         if command -v opencode >/dev/null 2>&1; then
             dynamic_models=$(opencode models 2>/dev/null)
+            if [[ $? -eq 0 ]]; then
+                models="$dynamic_models"
+            fi
+        fi
+    elif [[ "$agent" == "grok" ]]; then
+        # Query models dynamically from the tool if supported
+        if command -v grok >/dev/null 2>&1; then
+            dynamic_models=$(grok models 2>/dev/null)
             if [[ $? -eq 0 ]]; then
                 models="$dynamic_models"
             fi
