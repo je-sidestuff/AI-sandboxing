@@ -344,6 +344,69 @@ When the heuristic input is ambiguous:
 
 ---
 
+## CRITICAL: Execute, Do Not Document
+
+**ERR is a transformation process that produces transformed code, not documentation about transformation.**
+
+The instructions you generate (both the initial `instruction` and each `sequence_command`) must clearly communicate to the worker agent that it should produce actual artifacts, not descriptions. The worker does not know it's doing an ERR unless you tell it clearly what output is expected.
+
+### Communicating Worker Role Through Instructions
+
+Your instructions ARE the worker's understanding of its task. To prevent workers from defaulting to documentation mode:
+
+1. **Be explicit about expected output types** — Say "create quarks/Q001.ts containing the extracted function code" not "document the quarks"
+
+2. **Reference concrete source content** — Name specific files and functions from the source repository. Don't say "identify functional molecules"; say "extract parseConfig() and validateInput() from config/parser.go"
+
+3. **Specify file extensions** — ".ts", ".go", ".py" files containing code, NOT ".md" files describing code
+
+4. **Use action verbs that demand artifacts** — "Extract", "Write", "Create", "Implement" not "Analyze", "Document", "Describe", "Plan"
+
+### What Success Looks Like
+
+✅ **Quarks** = Actual code files (Q001.ts, Q002.go) containing extracted functions/capabilities
+✅ **Atoms** = Actual code files (atoms/auth.ts, atoms/parser.go) containing independent functional units
+✅ **Molecules** = Actual code files with working code that has dependencies
+✅ **Distillation** = Taking Q001.ts and improving/verifying the actual code
+✅ **Recrystallization** = Writing new main.go that integrates the distilled code
+
+### What Failure Looks Like
+
+❌ Q001.md that says "This quark would contain the authentication primitives..."
+❌ atoms/README.md that catalogs "The atoms in this system are: 1. Auth atom, 2. Parser atom..."
+❌ DECOMPOSITION-PLAN.md that describes what decomposition would look like
+❌ Creating a directory structure with markdown files describing what would go in each directory
+
+### The Litmus Test
+
+After each step, ask: "Did I produce working code, or did I describe what code would exist?"
+
+If the answer is "I described it" — you have failed. Delete the description and write the actual code.
+
+### Command Phrasing
+
+When generating sequence_commands, phrase them to demand execution:
+
+**WRONG:** "Analyze the codebase and document the quark structure"
+**RIGHT:** "Extract functions from auth.ts into quarks/Q001.ts, Q002.ts. Each quark file must contain the actual function code."
+
+**WRONG:** "Create a decomposition plan for the dispatcher"
+**RIGHT:** "Decompose dispatcher.ts: extract the routeMessage() function into quarks/Q003.ts, extract the validatePayload() function into quarks/Q004.ts"
+
+### Grounding in Concrete Repository Content
+
+When generating ERR dispatches, you have access to a READ SPACE containing the actual source repository. Use this to:
+
+1. **Inventory what exists** — Before generating sequence_commands, identify the actual files, directories, and functions in the source
+
+2. **Name specific artifacts** — Reference real filenames like "agent-worker/main.go" or "dispatcher/handlers.ts", not abstract concepts like "the worker module"
+
+3. **Avoid abstract pass-through** — Don't restate the request in different words. "Decompose the codebase into quarks" is useless. "Extract the processRequest() and handleError() functions from server.go into quarks/" is actionable.
+
+4. **If you can't identify specific content** — State that explicitly in the dispatch rather than generating vague instructions that will confuse the worker
+
+---
+
 ## Reference: ERR Terminology
 
 | Term | Definition |
