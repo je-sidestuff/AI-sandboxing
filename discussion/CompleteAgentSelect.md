@@ -65,19 +65,55 @@ Define categories like:
 
 1. **Selection Strategy**: Should capability selection be purely static registry (fast, deterministic) or allow a meta-heuristic LLM call for complex tasks? What is the performance budget?
 
+```HUMAN ANSWER: 
+  When heuristic-agent creates tasks and flows for agent-worker to action it will be aware of the ability to select, but at first it will not be encouraged to with default language, it will only understand when the requester is asking.
+
+  When requests are input into heuristic-request we can add a special exact instruction substring to trigger the use of different agents/models. We will be able to say:
+  - "We will use agent <agent>" (ie: We will use agent grok.)
+  - "We will use model <model>" (ie: We will use model xai/grok-4.20-0309-reasoning to create a comprehensive plan)
+  - "We will use an agent with <capability> capability" (ie: We will use an agent with video capability to draw the diagram.)
+
+  A substring is allowed anywhere in the input and will be interpreted by the heuristic interpreter as well as recognized as a specific instruction string.
+
+  The setting will become available as input in the schema of the worker work units and will not need to be visible in the message/prompt to take effect.
+```
+
 2. **Capability Taxonomy**: What specific capabilities should be in the initial registry? Please provide prioritized list (e.g. reasoning-depth, tool-use, multimodal, cost-sensitivity, context-window, speed).
+
+```HUMAN ANSWER: 
+  We are only starting with the two currently defined capabilities: 'image', and 'cheap'.
+
+  We are starting with these as an incremental development strategy, we will expand this subsequently.
+```
 
 3. **Heuristic Self-Selection**: Should `heuristic-request` always run on a fixed high-capability model (e.g. `grok-4.20-reasoning`), or allow it to be selected via the same system?
 
+```HUMAN ANSWER: 
+  The heuristic-request agent will use its default by default, and will be drivable through the specific selection-stringa.
+```
+
 4. **Conflict Resolution**: Precedence rules when direct params, capability, and heuristic recommendation disagree? How to surface conflicts in audits?
 
+```HUMAN ANSWER: 
+  Direct assignment will take precedents over a capability but will error if an incompatible agent+model and capability are selected.
+```
 5. **Registry Maintenance**: Should profiles be in code, JSON config, or dynamically updated? Any desire for per-workspace or per-user overrides?
 
+```HUMAN ANSWER:
+  In code as a first step, specifically for incremental development purposes.
+```
 6. **Observability**: What additional fields should `audit.json` and session records capture about the selection decision?
+
+```HUMAN ANSWER:
+  Those needed to paint a ccomplete picture.
+```
 
 7. **Scope**: Should this also extend to `agent-dispatch` Terraform flows and approval gates? Any constraints from containment/execution modules?
 
-Please review and provide guidance on the questions above before implementation begins.
+```HUMAN ANSWER:
+  Agent dispatch needs to have the minimum capacity necessary to properly convey the output of heuristic-request to get it to an agent-worker.
+```
 
 ---
-*Last updated: 2026-04-11. References previous SmartModels.md and agent audit work.*
+*Last updated: 2026-04-11. References previous SmartModels.md and agent audit work.* -- xai/grok-4.20-0309-reasoning
+*Last updated: 2026-04-11. Meat-poked answers into place.* -- human
