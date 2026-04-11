@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/je-sidestuff/AI-sandboxing/pkg/agentaudit"
 	"github.com/je-sidestuff/AI-sandboxing/pkg/filestory"
 )
 
@@ -1110,6 +1111,17 @@ func (w *AgentWorker) executeAgent(folderPath string, inst *Instruction, agent s
 	// This helps the agent understand its filesystem boundaries
 	fullInstruction := buildWorkspacePreamble(workspace) + inst.Instruction
 
+	// Capture a full audit snapshot before invoking the agent (AGENT_AUDIT=FULL)
+	if auditErr := agentaudit.Capture(agentaudit.Input{
+		AgentType: "agent-worker",
+		ID:        w.workerID,
+		Agent:     agent,
+		Prompt:    fullInstruction,
+		FSPaths:   []string{workspace.RootPath, folderPath},
+	}); auditErr != nil {
+		log.Printf("[%s] Warning: agent audit capture failed: %v", w.workerID, auditErr)
+	}
+
 	// Write instruction to the write space so the agent can see it
 	promptFile := filepath.Join(workspace.WritePrimary, ".prompt.tmp")
 	if err := os.WriteFile(promptFile, []byte(fullInstruction), 0644); err != nil {
@@ -1280,6 +1292,17 @@ func (w *AgentWorker) executeReportAgent(folderPath string, report *Report, agen
 
 	// Add workspace context preamble to help agent understand its boundaries
 	fullInstruction := buildWorkspacePreamble(workspace) + instruction
+
+	// Capture a full audit snapshot before invoking the agent (AGENT_AUDIT=FULL)
+	if auditErr := agentaudit.Capture(agentaudit.Input{
+		AgentType: "agent-worker",
+		ID:        w.workerID,
+		Agent:     agent,
+		Prompt:    fullInstruction,
+		FSPaths:   []string{workspace.RootPath, folderPath},
+	}); auditErr != nil {
+		log.Printf("[%s] Warning: agent audit capture failed: %v", w.workerID, auditErr)
+	}
 
 	// Write instruction to the write space so the agent can see it
 	promptFile := filepath.Join(workspace.WritePrimary, ".prompt.tmp")

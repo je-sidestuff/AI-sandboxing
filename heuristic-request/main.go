@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/je-sidestuff/AI-sandboxing/pkg/agentaudit"
 	"github.com/je-sidestuff/AI-sandboxing/pkg/filestory"
 )
 
@@ -562,6 +563,45 @@ func (w *HeuristicWatcher) buildHeuristicPrompt(heuristicContent string) string 
 
 Analyze the heuristic input and determine the appropriate execution pattern. All dispatches go through an approval flow automatically before execution.
 
+## CRITICAL: Pre-Dispatch Analysis Requirements
+
+Before emitting ANY dispatch, you MUST perform concrete filesystem analysis. Vague or abstract dispatches are REJECTED.
+
+### Mandatory Analysis Steps
+
+1. **Read key files**: Examine at least 5-10 relevant files from the target repository. The codebase is available at:
+   - %s (AI-sandboxing repository)
+   - %s (work unit content with any additional context)
+
+2. **Reference specific code**: Your dispatch instruction MUST include:
+   - Specific file paths (e.g., "agent-worker/main.go", "pkg/agentaudit/audit.go")
+   - Line numbers or function names (e.g., "the executeAgent function at line 801", "lines 45-80")
+   - Concrete code patterns you observed (e.g., "the existing error handling uses fmt.Errorf with %%w wrapping")
+
+3. **Provide concrete examples**: Include at least 3 specific observations from your analysis, such as:
+   - "Found duplicate command parsing logic in agent-dispatch/main.go:45-80 and agent-worker/main.go:30-60"
+   - "The pkg/filestory/logger.go implements a logging pattern that should be reused"
+   - "The existing tests in agent-dispatch/main_test.go follow table-driven test patterns"
+
+### Pre-Dispatch Checklist (All must be YES)
+
+Before writing your dispatch, verify:
+- [ ] Did I read at least 5 files from the repository?
+- [ ] Does my instruction reference specific file paths?
+- [ ] Does my instruction include line numbers or function names?
+- [ ] Did I include at least 3 concrete observations from the code?
+- [ ] Is my instruction actionable without the worker needing to "explore" or "discover"?
+
+### FORBIDDEN Dispatch Patterns
+
+The following patterns indicate INSUFFICIENT ANALYSIS and will be rejected:
+
+- "Create empty directories for future population" → Instead: specify what files go in each directory
+- "Start with all rows empty pending Phase 1" → Instead: populate with actual code elements you found
+- "Explore the codebase to find..." → Instead: YOU explore first, then tell the worker exactly what you found
+- "Identify patterns in..." → Instead: LIST the patterns you identified
+- Abstract summaries like "intake, dispatch, execution layers" → Instead: cite specific files that implement each layer
+
 ## Dispatch Types (Execution Patterns)
 
 ### repo-isolation
@@ -671,7 +711,10 @@ For ANY task that involves:
 **Sequence detection keywords:** chapters, phases, series, step-by-step, tutorial, guide, multi-part, staged, phased
 
 Output exactly ONE file wrapped in triple backticks with the filename.
-`, heuristicContent, "```", "```", "```", "```", "```", "```", "```", "```", "```", "```")
+`, heuristicContent,
+		filepath.Join(agentWorkspaceRoot, "read", "default"),
+		filepath.Join(agentWorkspaceRoot, "read", "workunit"),
+		"```", "```", "```", "```", "```", "```", "```", "```", "```", "```")
 }
 
 // extractFilesFromOutput parses the agent output to extract files from code blocks
@@ -831,6 +874,17 @@ func (w *HeuristicWatcher) executeAgent(folderPath, prompt, agentOverride, model
 	// Set ownership of prompt file if running as root
 	if os.Getuid() == 0 && w.agentUID != 0 {
 		os.Chown(promptFile, w.agentUID, w.agentGID)
+	}
+
+	// Capture a full audit snapshot before invoking the agent (AGENT_AUDIT=FULL)
+	if auditErr := agentaudit.Capture(agentaudit.Input{
+		AgentType: "heuristic-request",
+		ID:        w.watcherID,
+		Agent:     agentToUse,
+		Prompt:    prompt,
+		FSPaths:   []string{workspace.RootPath, folderPath},
+	}); auditErr != nil {
+		log.Printf("[%s] Warning: agent audit capture failed: %v", w.watcherID, auditErr)
 	}
 
 	// Build command arguments - ALWAYS use prompt mode (-p)

@@ -347,7 +347,7 @@ func main() {
 	completer := &ShellCompleter{cwd: &cwd}
 
 	rl, err := readline.NewEx(&readline.Config{
-		Prompt:          buildPrompt(cwd, currentAgent, currentModel),
+		Prompt:          buildPrompt(cwd, currentAgent, currentModel, 0),
 		HistoryFile:     readlineRecords,
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
@@ -360,6 +360,7 @@ func main() {
 	defer rl.Close()
 
 	var lastCommandTime time.Time
+	var lastExitCode int
 	encoder := json.NewEncoder(logFile)
 
 	for {
@@ -380,7 +381,7 @@ func main() {
 		}
 
 		// Handle multi-line input (backslash, heredoc, unclosed quotes)
-		mainPrompt := buildPrompt(cwd, currentAgent, currentModel)
+		mainPrompt := buildPrompt(cwd, currentAgent, currentModel, lastExitCode)
 		line, err := readMultiLine(rl, initialLine, mainPrompt)
 		if err == readline.ErrInterrupt {
 			continue // User cancelled multi-line input
@@ -418,7 +419,7 @@ func main() {
 			} else {
 				oldCwd = cwd
 				cwd = newDir
-				rl.SetPrompt(buildPrompt(cwd, currentAgent, currentModel))
+				rl.SetPrompt(buildPrompt(cwd, currentAgent, currentModel, lastExitCode))
 			}
 			continue
 		}
@@ -438,7 +439,7 @@ func main() {
 				currentAgent = newAgent
 				// Clear model when switching agents - the new agent may not support the old model
 				currentModel = ""
-				rl.SetPrompt(buildPrompt(cwd, currentAgent, currentModel))
+				rl.SetPrompt(buildPrompt(cwd, currentAgent, currentModel, lastExitCode))
 				fmt.Println(successStyle.Render(fmt.Sprintf("agent set to: %s", currentAgent)))
 			} else {
 				fmt.Println(errorStyle.Render(fmt.Sprintf("unknown agent: %s", newAgent)))
@@ -474,7 +475,7 @@ func main() {
 				fmt.Println(errorStyle.Render(err.Error()))
 			} else {
 				currentModel = newModel
-				rl.SetPrompt(buildPrompt(cwd, currentAgent, currentModel))
+				rl.SetPrompt(buildPrompt(cwd, currentAgent, currentModel, lastExitCode))
 				fmt.Println(successStyle.Render(fmt.Sprintf("model set to: %s", currentModel)))
 			}
 			continue
@@ -484,7 +485,7 @@ func main() {
 			continue
 		} else if line == "clear-model" {
 			currentModel = ""
-			rl.SetPrompt(buildPrompt(cwd, currentAgent, currentModel))
+			rl.SetPrompt(buildPrompt(cwd, currentAgent, currentModel, lastExitCode))
 			fmt.Println(successStyle.Render("model cleared - using agent's default"))
 			continue
 		} else if line == "list-models" {
@@ -502,6 +503,8 @@ func main() {
 			exitCode = runCommand(line, logFile)
 		}
 
+		lastExitCode = exitCode
+
 		// Write metadata record
 		record := CommandRecord{
 			ID:        uuid.New().String()[:8],
@@ -512,12 +515,12 @@ func main() {
 		}
 		encoder.Encode(record)
 
-		// Update prompt (cwd might have changed via cd)
+		// Update prompt (cwd might have changed via cd, exit code may have changed)
 		newCwd, _ := os.Getwd()
 		if newCwd != cwd {
 			cwd = newCwd
-			rl.SetPrompt(buildPrompt(cwd, currentAgent, currentModel))
 		}
+		rl.SetPrompt(buildPrompt(cwd, currentAgent, currentModel, lastExitCode))
 	}
 }
 
@@ -872,7 +875,7 @@ func abbreviatePath(path string, maxLen int) string {
 	return result
 }
 
-func buildPrompt(cwd string, agent string, model string) string {
+func buildPrompt(cwd string, agent string, model string, lastExitCode int) string {
 	// Show abbreviated path (max 30 chars for the path portion)
 	dir := abbreviatePath(cwd, 30)
 	// Use agent-specific color if available
@@ -889,7 +892,12 @@ func buildPrompt(cwd string, agent string, model string) string {
 	} else {
 		promptLabel = "[" + agent + "]"
 	}
-	return agentPromptStyle.Render(promptLabel) + " " + promptStyle.Render(dir) + " › "
+	prompt := agentPromptStyle.Render(promptLabel) + " " + promptStyle.Render(dir) + " › "
+	if lastExitCode != 0 {
+		rcStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+		prompt = rcStyle.Render(fmt.Sprintf("[%d]", lastExitCode)) + " " + prompt
+	}
+	return prompt
 }
 
 func runCommand(cmdLine string, logFile *os.File) int {
