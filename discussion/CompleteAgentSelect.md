@@ -42,24 +42,23 @@ Selection flow today: env/default > JSON direct override > capability lookup (pa
 - **agent-dispatch**: Propagate selection fields through Terraform flows and approval.
 - **invoke-agent.sh**: Full support for capability-driven selection, expose `--list-capabilities`.
 
-### 4. Capability Registry Design
-Define categories like:
-- `high-reasoning` → grok-4.20-reasoning or claude-opus
-- `code-analysis` → opencode with strong model
-- `fast-cheap` → gemini-flash or o3-mini
-- `execution` → agents with tool use
-- `heuristic-processor` → dedicated strong model for the heuristic itself
-
 ## Next Steps
 
-1. Create `discussion/CompleteAgentSelect.md` (this document) ✓
-2. Implement `pkg/agentselect` with registry and selection logic.
-3. Update all structs, prompts, and main.go files to use the shared selector.
-4. Expand and document the capability registry.
-5. Enhance heuristic prompt to support capability recommendation output.
-6. Update audits/records to capture selection rationale.
-7. Test end-to-end flows (direct, capability, default).
-8. Revise `SmartModels.md` with completed implementation details.
+Updated with implementation plan incorporating all HUMAN ANSWERS (incremental: only 'image','cheap'; registry in code; substring triggers anywhere in input for "We will use agent X"/"model Y"/"agent with Z capability"; direct precedence (error on incompatible agent+model+capability); heuristic-request uses default unless driven by strings; worker schema for settings (not always in prompt); agent-dispatch minimal conveyance; full picture in audits).
+
+**Dispatch Choice**: Break up into many smaller tasks for fast coding agents (aligns with incremental strategy and heuristic task breakdown). One large task to powerful reasoning model rejected to leverage the system being built. All testing together by humans once complete (no during-testing).
+
+### Detailed Implementation Plan
+1. Create `pkg/agentselect` (static Go registry for 'image'/'cheap' -> agent/model mappings, Select() fn handling direct/capability/substring parsing, precedence, rationale, error on conflicts).
+2. Standardize structs across heuristic-request, agent-worker, agent-dispatch, reports, audits (add Model, Capability, SelectionRationale).
+3. Update heuristic-request: parse selection substrings in input, enhance prompt for optional selection JSON output, integrate selector in process/execute (default high-capability unless specified).
+4. Update invoke-agent.sh, ambiguous-agent/main.go for full capability support, --list-capabilities, substring recognition.
+5. Update agent-worker to use selector for INSTRUCTION/REPORT units, propagate via schema without always surfacing in prompt.
+6. Update agent-dispatch to convey selection fields from heuristic output to workers/Terraform/approvals.
+7. Enhance pkg/agentaudit and session records for complete selection picture (rationale, conflicts, etc.).
+8. Revise SmartModels.md + this doc; expand registry later.
+
+(Original steps 2-7 now mapped to above; start with pkg/agentselect.)
 
 ## Open Questions for Humans
 
