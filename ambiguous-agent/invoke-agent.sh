@@ -174,7 +174,8 @@ get_capability_var() {
 # List available capabilities
 list_capabilities() {
     echo "Available capabilities:"
-    echo "  image   - Image understanding (uses grok::grok-code-fast-1)"
+    echo "  image   - Image understanding and generation (uses grok::grok-code-fast-1)"
+    echo "  cheap   - Fast and inexpensive tasks (uses opencode::google/gemini-2.5-flash)"
 }
 
 # List available models for an agent

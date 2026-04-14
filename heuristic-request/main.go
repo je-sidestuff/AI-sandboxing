@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/je-sidestuff/AI-sandboxing/pkg/agentaudit"
+	"github.com/je-sidestuff/AI-sandboxing/pkg/agentselect"
 	"github.com/je-sidestuff/AI-sandboxing/pkg/filestory"
 )
 
@@ -54,19 +55,23 @@ var backoffLevels = []time.Duration{
 
 // HeuristicUnit represents a discovered heuristic input
 type HeuristicUnit struct {
-	Path       string
-	ID         string
-	Content    string
-	FolderPath string
-	Agent      string // Optional agent override
-	Model      string // Optional model override (for agents that support it)
+	Path               string
+	ID                 string
+	Content            string
+	FolderPath         string
+	Agent              string
+	Model              string
+	Capability         string
+	SelectionRationale string
 }
 
 // HeuristicData is the format for HEURISTIC.json
 type HeuristicData struct {
-	Message string `json:"message"`
-	Agent   string `json:"agent,omitempty"` // Optional agent override
-	Model   string `json:"model,omitempty"` // Optional model override (for agents that support it)
+	Message            string `json:"message"`
+	Agent              string `json:"agent,omitempty"`
+	Model              string `json:"model,omitempty"`
+	Capability         string `json:"capability,omitempty"`
+	SelectionRationale string `json:"selection_rationale,omitempty"`
 }
 
 // ExtractedFile represents a file extracted from agent output
@@ -97,9 +102,9 @@ type HeuristicWatcher struct {
 	lastActivity   time.Time
 	backoffIndex   int
 	nextBackoffLog time.Time
-	agentUser      string // OS user to run agent as (for host mode isolation)
-	agentUID       int    // UID of agent user (0 if not found/not using)
-	agentGID       int    // GID of agent user (0 if not found/not using)
+	agentUser      string            // OS user to run agent as (for host mode isolation)
+	agentUID       int               // UID of agent user (0 if not found/not using)
+	agentGID       int               // GID of agent user (0 if not found/not using)
 	fileStory      *filestory.Logger // File operation logger (nil if FILE_STORY_PATH not set)
 }
 
@@ -516,12 +521,14 @@ func (w *HeuristicWatcher) checkForHeuristicUnits() ([]HeuristicUnit, error) {
 				}
 
 				units = append(units, HeuristicUnit{
-					Path:       heuristicJSON,
-					ID:         entry.Name(),
-					Content:    data.Message,
-					Agent:      data.Agent,
-					Model:      data.Model,
-					FolderPath: folderPath,
+					Path:               heuristicJSON,
+					ID:                 entry.Name(),
+					Content:            data.Message,
+					Agent:              data.Agent,
+					Model:              data.Model,
+					Capability:         data.Capability,
+					SelectionRationale: data.SelectionRationale,
+					FolderPath:         folderPath,
 				})
 				continue // Skip to next folder
 			}
@@ -537,12 +544,14 @@ func (w *HeuristicWatcher) checkForHeuristicUnits() ([]HeuristicUnit, error) {
 				w.fileStory.LogFile(filestory.OpRead, heuristicMD)
 
 				units = append(units, HeuristicUnit{
-					Path:       heuristicMD,
-					ID:         entry.Name(),
-					Content:    string(content),
-					FolderPath: folderPath,
-					Agent:      "", // No agent override from MD
-					Model:      "", // No model override from MD
+					Path:               heuristicMD,
+					ID:                 entry.Name(),
+					Content:            string(content),
+					FolderPath:         folderPath,
+					Agent:              "",
+					Model:              "",
+					Capability:         "",
+					SelectionRationale: "",
 				})
 			}
 		}
@@ -708,6 +717,12 @@ For ANY task that involves:
 - Infer repo owner when not specified: "agent-events" → "je-sidestuff/agent-events"
 - All dispatches go through approval automatically - you don't need to specify approval
 
+**Agent and Model Selection**
+
+If input contains phrases like "We will use agent X", "We will use model Y", or "We will use an agent with Z capability" anywhere, include in JSON output:
+"agent", "model", "capability", "selection_rationale" fields with parsed values and rationale explaining the substring match.
+Default to high-capability unless specific strings or clear need for image/cheap capability.
+
 **Sequence detection keywords:** chapters, phases, series, step-by-step, tutorial, guide, multi-part, staged, phased
 
 Output exactly ONE file wrapped in triple backticks with the filename.
@@ -753,10 +768,16 @@ func (w *HeuristicWatcher) processHeuristicUnit(unit HeuristicUnit) error {
 
 	startTime := time.Now()
 
+	sel, selErr := agentselect.Select(unit.Content, unit.Agent, unit.Model, unit.Capability)
+	if selErr != nil {
+		log.Printf("[%s] Selection error: %v using defaults", w.watcherID, selErr)
+		sel = agentselect.Selection{Agent: "claude"}
+	}
+
 	// Create PROCESSING.md to mark we're working on it
 	processingMD := filepath.Join(unit.FolderPath, "PROCESSING.md")
-	processingContent := fmt.Sprintf("# Processing\n\nWatcher ID: %s\nStarted: %s\nAgent: %s\n",
-		w.watcherID, startTime.Format(time.RFC3339), w.currentAgent)
+	processingContent := fmt.Sprintf("# Processing\n\nWatcher ID: %s\nStarted: %s\nAgent: %s\nModel: %s\nCapability: %s\nRationale: %s\n",
+		w.watcherID, startTime.Format(time.RFC3339), sel.Agent, sel.Model, sel.Capability, sel.Rationale)
 	if err := os.WriteFile(processingMD, []byte(processingContent), 0644); err != nil {
 		return fmt.Errorf("failed to create PROCESSING.md: %w", err)
 	}
@@ -765,7 +786,7 @@ func (w *HeuristicWatcher) processHeuristicUnit(unit HeuristicUnit) error {
 	prompt := w.buildHeuristicPrompt(unit.Content)
 
 	// Execute the agent in prompt-only mode
-	output, exitCode, err := w.executeAgent(unit.FolderPath, prompt, unit.Agent, unit.Model)
+	output, exitCode, err := w.executeAgent(unit.FolderPath, prompt, sel.Agent, sel.Model, sel.Capability)
 	if err != nil {
 		w.markHeuristicFailed(unit, err, startTime)
 		return err
@@ -840,8 +861,7 @@ func (w *HeuristicWatcher) processHeuristicUnit(unit HeuristicUnit) error {
 // restricted user (in host mode), and copies output back to the work unit folder.
 // agentOverride: if non-empty and valid, use this agent instead of the default
 // modelOverride: if non-empty, pass this model to the agent (for agents that support it)
-func (w *HeuristicWatcher) executeAgent(folderPath, prompt, agentOverride, modelOverride string) (string, int, error) {
-	// Find invoke-agent.sh
+func (w *HeuristicWatcher) executeAgent(folderPath, prompt, agentOverride, modelOverride, capabilityOverride string) (string, int, error) {
 	invokeScript := findInvokeScript()
 	if invokeScript == "" {
 		return "", 1, fmt.Errorf("invoke-agent.sh not found")
@@ -851,6 +871,7 @@ func (w *HeuristicWatcher) executeAgent(folderPath, prompt, agentOverride, model
 	if agentOverride != "" && isValidAgent(agentOverride) {
 		agentToUse = agentOverride
 	}
+	capabilityToUse := capabilityOverride
 
 	// Prepare the workspace - copy work unit to /agent/heuristic-request/read/default/
 	workspace, err := w.prepareWorkspace(folderPath)
@@ -876,20 +897,23 @@ func (w *HeuristicWatcher) executeAgent(folderPath, prompt, agentOverride, model
 		os.Chown(promptFile, w.agentUID, w.agentGID)
 	}
 
-	// Capture a full audit snapshot before invoking the agent (AGENT_AUDIT=FULL)
 	if auditErr := agentaudit.Capture(agentaudit.Input{
-		AgentType: "heuristic-request",
-		ID:        w.watcherID,
-		Agent:     agentToUse,
-		Prompt:    prompt,
-		FSPaths:   []string{workspace.RootPath, folderPath},
+		AgentType:          "heuristic-request",
+		ID:                 w.watcherID,
+		Agent:              agentToUse,
+		Model:              modelOverride,
+		Capability:         capabilityToUse,
+		SelectionRationale: "",
+		Prompt:             prompt,
+		FSPaths:            []string{workspace.RootPath, folderPath},
 	}); auditErr != nil {
 		log.Printf("[%s] Warning: agent audit capture failed: %v", w.watcherID, auditErr)
 	}
 
-	// Build command arguments - ALWAYS use prompt mode (-p)
 	cmdArgs := []string{"-p", "-a", agentToUse}
-	// Add model flag if model override is specified
+	if capabilityToUse != "" {
+		cmdArgs = append(cmdArgs, "-c", capabilityToUse)
+	}
 	if modelOverride != "" {
 		cmdArgs = append(cmdArgs, "-m", modelOverride)
 	}
