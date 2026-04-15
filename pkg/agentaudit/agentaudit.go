@@ -18,14 +18,16 @@ const auditRoot = "/agent-audit"
 
 // Input holds the data needed for a full audit snapshot.
 type Input struct {
-	AgentType          string
-	ID                 string
-	Agent              string
-	Model              string
-	Capability         string
-	SelectionRationale string
-	Prompt             string
-	FSPaths            []string
+	// AgentType identifies the component capturing the audit (e.g. "heuristic-request", "agent-worker").
+	AgentType string
+	// ID identifies the watcher or worker instance.
+	ID string
+	// Agent is the name of the agent being invoked (e.g. "claude").
+	Agent string
+	// Prompt is the complete prompt text fed to the agent.
+	Prompt string
+	// FSPaths are filesystem paths to snapshot (tree listing only, no file contents).
+	FSPaths []string
 }
 
 // IsEnabled reports whether AGENT_AUDIT=FULL is set.
@@ -71,16 +73,14 @@ func Capture(input Input) error {
 		return fmt.Errorf("failed to write filesystem.txt: %w", err)
 	}
 
+	// audit.json — metadata
 	meta := map[string]interface{}{
-		"agent_type":          input.AgentType,
-		"id":                  input.ID,
-		"agent":               input.Agent,
-		"model":               input.Model,
-		"capability":          input.Capability,
-		"selection_rationale": input.SelectionRationale,
-		"timestamp":           time.Now().UTC().Format(time.RFC3339),
-		"fs_paths":            input.FSPaths,
-		"audit_dir":           auditDir,
+		"agent_type": input.AgentType,
+		"id":         input.ID,
+		"agent":      input.Agent,
+		"timestamp":  time.Now().UTC().Format(time.RFC3339),
+		"fs_paths":   input.FSPaths,
+		"audit_dir":  auditDir,
 	}
 	metaData, _ := json.MarshalIndent(meta, "", "  ")
 	if err := os.WriteFile(filepath.Join(auditDir, "audit.json"), metaData, 0644); err != nil {

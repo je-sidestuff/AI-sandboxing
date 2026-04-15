@@ -15,7 +15,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/je-sidestuff/AI-sandboxing/pkg/agentaudit"
-	"github.com/je-sidestuff/AI-sandboxing/pkg/agentselect"
 	"github.com/je-sidestuff/AI-sandboxing/pkg/filestory"
 )
 
@@ -66,24 +65,18 @@ var backoffLevels = []time.Duration{
 
 // Instruction represents the JSON structure for work instructions
 type Instruction struct {
-	Instruction        string `json:"instruction"`
-	Mode               string `json:"mode"`
-	Agent              string `json:"agent,omitempty"`
-	Model              string `json:"model,omitempty"`
-	Capability         string `json:"capability,omitempty"`
-	SelectionRationale string `json:"selection_rationale,omitempty"`
-	Timestamp          string `json:"timestamp,omitempty"`
+	Instruction string `json:"instruction"`
+	Mode        string `json:"mode"` // "prompt" (-p) or "execute" (-e)
+	Agent       string `json:"agent,omitempty"`
+	Timestamp   string `json:"timestamp,omitempty"`
 }
 
 // Report represents the JSON structure for report work units
 type Report struct {
-	Type               string `json:"type"`
-	Content            string `json:"content,omitempty"`
-	Agent              string `json:"agent,omitempty"`
-	Model              string `json:"model,omitempty"`
-	Capability         string `json:"capability,omitempty"`
-	SelectionRationale string `json:"selection_rationale,omitempty"`
-	Timestamp          string `json:"timestamp,omitempty"`
+	Type      string `json:"type"`                // "custom", "daily", "weekly", "monthly"
+	Content   string `json:"content,omitempty"`   // For custom type: the markdown content
+	Agent     string `json:"agent,omitempty"`     // Optional agent override
+	Timestamp string `json:"timestamp,omitempty"` // When the report was created/converted
 }
 
 // WorkUnit represents a discovered work unit with its type
@@ -94,20 +87,17 @@ type WorkUnit struct {
 
 // WorkerRecord holds metadata for processed work units
 type WorkerRecord struct {
-	WorkerID           string `json:"worker_id"`
-	WorkUnit           string `json:"work_unit"`
-	StartTime          string `json:"start_time"`
-	EndTime            string `json:"end_time"`
-	DurationMs         int64  `json:"duration_ms"`
-	Agent              string `json:"agent"`
-	Model              string `json:"model,omitempty"`
-	Capability         string `json:"capability,omitempty"`
-	SelectionRationale string `json:"selection_rationale,omitempty"`
-	Mode               string `json:"mode,omitempty"`
-	ReportType         string `json:"report_type,omitempty"`
-	ExitCode           int    `json:"exit_code"`
-	InputPath          string `json:"input_path"`
-	OutputPath         string `json:"output_path"`
+	WorkerID   string `json:"worker_id"`
+	WorkUnit   string `json:"work_unit"`
+	StartTime  string `json:"start_time"`
+	EndTime    string `json:"end_time"`
+	DurationMs int64  `json:"duration_ms"`
+	Agent      string `json:"agent"`
+	Mode       string `json:"mode,omitempty"`        // For instruction work units
+	ReportType string `json:"report_type,omitempty"` // For report work units: daily, weekly, monthly
+	ExitCode   int    `json:"exit_code"`
+	InputPath  string `json:"input_path"`
+	OutputPath string `json:"output_path"`
 }
 
 // AgentWorkspace represents the prepared workspace for an agent invocation
@@ -134,9 +124,9 @@ type AgentWorker struct {
 	nextBackoffLog     time.Time
 	instructionEnabled bool
 	reportEnabled      bool
-	agentUser          string            // OS user to run agent as (for host mode isolation)
-	agentUID           int               // UID of agent user (0 if not found/not using)
-	agentGID           int               // GID of agent user (0 if not found/not using)
+	agentUser          string // OS user to run agent as (for host mode isolation)
+	agentUID           int    // UID of agent user (0 if not found/not using)
+	agentGID           int    // GID of agent user (0 if not found/not using)
 	fileStory          *filestory.Logger // File operation logger (nil if FILE_STORY_PATH not set)
 }
 
@@ -491,9 +481,9 @@ func (w *AgentWorker) prepareAgentConfig(workspace *AgentWorkspace, agent string
 			},
 			// Context paths for file reading - agent can READ from these
 			"contextPaths": []string{
-				workspace.WritePrimary, // /agent/agent-worker/write/primary (working dir)
-				workspace.ReadDefault,  // /agent/agent-worker/read/default (codebase reference - READ ONLY)
-				workspace.ReadWorkunit, // /agent/agent-worker/read/workunit (work unit - READ ONLY)
+				workspace.WritePrimary,  // /agent/agent-worker/write/primary (working dir)
+				workspace.ReadDefault,   // /agent/agent-worker/read/default (codebase reference - READ ONLY)
+				workspace.ReadWorkunit,  // /agent/agent-worker/read/workunit (work unit - READ ONLY)
 			},
 			// Allowed directories for external access - ONLY the write space for modifications
 			"allowedDirectories": []string{
@@ -507,8 +497,8 @@ func (w *AgentWorker) prepareAgentConfig(workspace *AgentWorkspace, agent string
 			"permissions": map[string]interface{}{
 				// Only auto-approve the write space for external_directory permission
 				"external_directory": []string{
-					workspace.WritePrimary,                            // /agent/agent-worker/write/primary
-					workspace.WritePrimary + "/*",                     // subdirs of write space
+					workspace.WritePrimary,                          // /agent/agent-worker/write/primary
+					workspace.WritePrimary + "/*",                   // subdirs of write space
 					filepath.Join(workspace.RootPath, "write") + "/*", // anything under write/
 				},
 			},
@@ -1065,26 +1055,18 @@ func (w *AgentWorker) processReportWorkUnit(folderPath string) error {
 
 // getAgent returns the agent to use, considering instruction override
 func (w *AgentWorker) getAgent(inst *Instruction) string {
-	sel, err := agentselect.Select(inst.Instruction, inst.Agent, inst.Model, inst.Capability)
-	if err != nil {
-		log.Printf("[%s] Selection error: %v, using default agent", w.workerID, err)
-		return w.currentAgent
+	if inst.Agent != "" && isValidAgent(inst.Agent) {
+		return inst.Agent
 	}
-	return sel.Agent
+	return w.currentAgent
 }
 
 // getAgentFromReport returns the agent to use, considering report override
 func (w *AgentWorker) getAgentFromReport(report *Report) string {
-	taskDesc := report.Content
-	if taskDesc == "" {
-		taskDesc = report.Type
+	if report.Agent != "" && isValidAgent(report.Agent) {
+		return report.Agent
 	}
-	sel, err := agentselect.Select(taskDesc, report.Agent, report.Model, report.Capability)
-	if err != nil {
-		log.Printf("[%s] Selection error: %v, using default agent", w.workerID, err)
-		return w.currentAgent
-	}
-	return sel.Agent
+	return w.currentAgent
 }
 
 // executeAgent runs the agent against the work unit
@@ -1129,15 +1111,13 @@ func (w *AgentWorker) executeAgent(folderPath string, inst *Instruction, agent s
 	// This helps the agent understand its filesystem boundaries
 	fullInstruction := buildWorkspacePreamble(workspace) + inst.Instruction
 
+	// Capture a full audit snapshot before invoking the agent (AGENT_AUDIT=FULL)
 	if auditErr := agentaudit.Capture(agentaudit.Input{
-		AgentType:          "agent-worker",
-		ID:                 w.workerID,
-		Agent:              agent,
-		Model:              inst.Model,
-		Capability:         inst.Capability,
-		SelectionRationale: inst.SelectionRationale,
-		Prompt:             fullInstruction,
-		FSPaths:            []string{workspace.RootPath, folderPath},
+		AgentType: "agent-worker",
+		ID:        w.workerID,
+		Agent:     agent,
+		Prompt:    fullInstruction,
+		FSPaths:   []string{workspace.RootPath, folderPath},
 	}); auditErr != nil {
 		log.Printf("[%s] Warning: agent audit capture failed: %v", w.workerID, auditErr)
 	}
@@ -1153,14 +1133,9 @@ func (w *AgentWorker) executeAgent(folderPath string, inst *Instruction, agent s
 		os.Chown(promptFile, w.agentUID, w.agentGID)
 	}
 
-	cmdArgs := []string{modeFlag, "-a", agent}
-	if inst.Model != "" {
-		cmdArgs = append(cmdArgs, "-m", inst.Model)
-	}
-	if inst.Capability != "" {
-		cmdArgs = append(cmdArgs, "-c", inst.Capability)
-	}
-	cmdArgs = append(cmdArgs, "-f", promptFile)
+	// Build command arguments using -f to read prompt from file
+	// When in execute mode, work units have already been approved through PR workflow
+	cmdArgs := []string{modeFlag, "-a", agent, "-f", promptFile}
 
 	// Create command
 	cmd := exec.Command(invokeScript, cmdArgs...)
@@ -1318,15 +1293,13 @@ func (w *AgentWorker) executeReportAgent(folderPath string, report *Report, agen
 	// Add workspace context preamble to help agent understand its boundaries
 	fullInstruction := buildWorkspacePreamble(workspace) + instruction
 
+	// Capture a full audit snapshot before invoking the agent (AGENT_AUDIT=FULL)
 	if auditErr := agentaudit.Capture(agentaudit.Input{
-		AgentType:          "agent-worker",
-		ID:                 w.workerID,
-		Agent:              agent,
-		Model:              report.Model,
-		Capability:         report.Capability,
-		SelectionRationale: report.SelectionRationale,
-		Prompt:             fullInstruction,
-		FSPaths:            []string{workspace.RootPath, folderPath},
+		AgentType: "agent-worker",
+		ID:        w.workerID,
+		Agent:     agent,
+		Prompt:    fullInstruction,
+		FSPaths:   []string{workspace.RootPath, folderPath},
 	}); auditErr != nil {
 		log.Printf("[%s] Warning: agent audit capture failed: %v", w.workerID, auditErr)
 	}
@@ -1343,15 +1316,9 @@ func (w *AgentWorker) executeReportAgent(folderPath string, report *Report, agen
 	}
 
 	// Build command arguments using -f to read prompt from file
-	cmdArgs := []string{modeFlag, "-a", agent}
-	if report.Model != "" {
-		cmdArgs = append(cmdArgs, "-m", report.Model)
-	}
-	if report.Capability != "" {
-		cmdArgs = append(cmdArgs, "-c", report.Capability)
-	}
-	cmdArgs = append(cmdArgs, "-f", promptFile)
+	cmdArgs := []string{modeFlag, "-a", agent, "-f", promptFile}
 
+	// Create command
 	cmd := exec.Command(invokeScript, cmdArgs...)
 
 	// Agent runs from write/primary/ - this is its working directory

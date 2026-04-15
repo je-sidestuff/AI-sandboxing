@@ -6,7 +6,6 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/chzyer/readline v1.5.1
 	github.com/google/uuid v1.6.0
-	github.com/je-sidestuff/AI-sandboxing/pkg/agentselect v0.0.0
 )
 
 require (
@@ -23,5 +22,3 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/sys v0.30.0 // indirect
 )
-
-replace github.com/je-sidestuff/AI-sandboxing/pkg/agentselect => ../pkg/agentselect

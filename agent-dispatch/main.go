@@ -72,45 +72,36 @@ var backoffLevels = []time.Duration{
 
 // Instruction represents the JSON structure for work instructions
 type Instruction struct {
-	Instruction        string `json:"instruction"`
-	Mode               string `json:"mode"`
-	Agent              string `json:"agent,omitempty"`
-	Model              string `json:"model,omitempty"`
-	Capability         string `json:"capability,omitempty"`
-	SelectionRationale string `json:"selection_rationale,omitempty"`
-	Timestamp          string `json:"timestamp,omitempty"`
+	Instruction string `json:"instruction"`
+	Mode        string `json:"mode"` // "prompt" (-p) or "execute" (-e)
+	Agent       string `json:"agent,omitempty"`
+	Timestamp   string `json:"timestamp,omitempty"`
 }
 
 // Report represents the JSON structure for report work units
 type Report struct {
-	Type               string `json:"type"`
-	Content            string `json:"content,omitempty"`
-	Agent              string `json:"agent,omitempty"`
-	Model              string `json:"model,omitempty"`
-	Capability         string `json:"capability,omitempty"`
-	SelectionRationale string `json:"selection_rationale,omitempty"`
-	Timestamp          string `json:"timestamp,omitempty"`
-	Date               string `json:"date,omitempty"`
+	Type      string `json:"type"`                // "custom", "daily", "weekly", "monthly"
+	Content   string `json:"content,omitempty"`   // For custom type: the markdown content
+	Agent     string `json:"agent,omitempty"`     // Optional agent override
+	Timestamp string `json:"timestamp,omitempty"` // When the report was created
+	Date      string `json:"date,omitempty"`      // For dated reports
 }
 
 // Dispatch represents the JSON structure for dispatch work units (watch mode)
 type Dispatch struct {
-	Type               string            `json:"type"`        // "direct", "in-repo", "repo-isolation", "sequence-to-new-repo" (NOT "approval" - approval is automatic)
-	Instruction        string            `json:"instruction"` // The instruction to dispatch
-	Mode               string            `json:"mode,omitempty"`
-	Agent              string            `json:"agent,omitempty"`
-	Model              string            `json:"model,omitempty"`
-	Capability         string            `json:"capability,omitempty"`
-	SelectionRationale string            `json:"selection_rationale,omitempty"`
-	TargetRepo         string            `json:"target_repo,omitempty"`
-	PRTitle            string            `json:"pr_title,omitempty"`       // For in-repo/repo-isolation: optional PR title
-	PRBody             string            `json:"pr_body,omitempty"`        // For in-repo/repo-isolation: optional PR body
-	IsolationName      string            `json:"isolation_name,omitempty"` // For repo-isolation: name of isolation repo to create
-	ApprovalRepo       string            `json:"approval_repo,omitempty"`  // "owner/repo" of approval repository (default: sloppo)
-	SourceContext      string            `json:"source_context,omitempty"` // Description of request origin
-	SkipApproval       bool              `json:"skip_approval,omitempty"`  // If true, skip the approval gate (use with caution!)
-	Timestamp          string            `json:"timestamp,omitempty"`
-	Metadata           map[string]string `json:"metadata,omitempty"` // Additional metadata
+	Type            string            `json:"type"`                      // "direct", "in-repo", "repo-isolation", "sequence-to-new-repo" (NOT "approval" - approval is automatic)
+	Instruction     string            `json:"instruction"`               // The instruction to dispatch
+	Mode            string            `json:"mode,omitempty"`            // "prompt" or "execute" (default: "execute")
+	Agent           string            `json:"agent,omitempty"`           // Optional agent override
+	TargetRepo      string            `json:"target_repo,omitempty"`     // For in-repo/repo-isolation: "owner/repo"
+	PRTitle         string            `json:"pr_title,omitempty"`        // For in-repo/repo-isolation: optional PR title
+	PRBody          string            `json:"pr_body,omitempty"`         // For in-repo/repo-isolation: optional PR body
+	IsolationName   string            `json:"isolation_name,omitempty"`  // For repo-isolation: name of isolation repo to create
+	ApprovalRepo    string            `json:"approval_repo,omitempty"`   // "owner/repo" of approval repository (default: sloppo)
+	SourceContext   string            `json:"source_context,omitempty"`  // Description of request origin
+	SkipApproval    bool              `json:"skip_approval,omitempty"`   // If true, skip the approval gate (use with caution!)
+	Timestamp       string            `json:"timestamp,omitempty"`
+	Metadata        map[string]string `json:"metadata,omitempty"`        // Additional metadata
 
 	// Sequence-to-new-repo specific fields
 	SequenceRepoName       string   `json:"sequence_repo_name,omitempty"`       // For sequence-to-new-repo: custom repo name (if not set, auto-generates seq-YYYYMMDD-HHMMSS-uuid)
@@ -171,8 +162,8 @@ type FlowRecord struct {
 	Status             string    `json:"status"` // "pending", "running", "monitoring", "completed", "failed"
 	Error              string    `json:"error,omitempty"`
 	PRUrl              string    `json:"pr_url,omitempty"`
-	ConclusionState    string    `json:"conclusion_state,omitempty"` // "active", "closed", "merged"
-	NeedsMonitoring    bool      `json:"needs_monitoring,omitempty"` // true if flow should be polled for conclusion state
+	ConclusionState    string    `json:"conclusion_state,omitempty"`   // "active", "closed", "merged"
+	NeedsMonitoring    bool      `json:"needs_monitoring,omitempty"`   // true if flow should be polled for conclusion state
 	LastPollTime       string    `json:"last_poll_time,omitempty"`
 	ReintegrationURL   string    `json:"reintegration_url,omitempty"`   // For repo-isolation: URL of reintegration PR
 	PendingInstruction string    `json:"pending_instruction,omitempty"` // For approval (legacy): instruction to execute when approved
@@ -187,8 +178,8 @@ type FlowRecord struct {
 	SequenceTotalSteps       int   `json:"sequence_total_steps,omitempty"`        // For sequence flows: total number of steps
 
 	// Direct dispatch specific fields
-	DirectWorkUnitID     string `json:"direct_work_unit_id,omitempty"`    // For direct flows: the work unit ID being monitored
-	DirectExpectedOutput string `json:"direct_expected_output,omitempty"` // For direct flows: expected output directory path
+	DirectWorkUnitID       string `json:"direct_work_unit_id,omitempty"`        // For direct flows: the work unit ID being monitored
+	DirectExpectedOutput   string `json:"direct_expected_output,omitempty"`     // For direct flows: expected output directory path
 }
 
 // Dispatcher manages dispatching work units and collecting results
@@ -1461,19 +1452,19 @@ func (d *Dispatcher) createApprovalGatedDispatch(unit DispatchUnit) error {
 	}
 
 	// Store the full pending dispatch for later execution
-	pendingDispatch := *unit.Dispatch   // Copy the dispatch
+	pendingDispatch := *unit.Dispatch // Copy the dispatch
 	pendingDispatch.SkipApproval = true // Pre-set for post-approval re-dispatch
 
 	// Write the flow record with pending dispatch details
 	flowRecord := FlowRecord{
-		DispatcherID:    d.dispatcherID,
-		FlowID:          flowID,
-		DispatchType:    DispatchTypeApproval,
-		DispatchPath:    unit.Path,
-		TFConfigDir:     tfConfigDir,
-		StartTime:       time.Now().Format(time.RFC3339),
-		Status:          "running",
-		PendingDispatch: &pendingDispatch,
+		DispatcherID:       d.dispatcherID,
+		FlowID:             flowID,
+		DispatchType:       DispatchTypeApproval,
+		DispatchPath:       unit.Path,
+		TFConfigDir:        tfConfigDir,
+		StartTime:          time.Now().Format(time.RFC3339),
+		Status:             "running",
+		PendingDispatch:    &pendingDispatch,
 		// Also set legacy fields for backwards compatibility in terraform config
 		PendingInstruction: unit.Dispatch.Instruction,
 		PendingMode:        unit.Dispatch.Mode,

@@ -15,7 +15,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/chzyer/readline"
 	"github.com/google/uuid"
-	"github.com/je-sidestuff/AI-sandboxing/pkg/agentselect"
 )
 
 const defaultRecordsPath = "/workspaces/agent-records/"
@@ -80,6 +79,20 @@ var agentModelConfigs = map[string]AgentModelConfig{
 			"grok-3-mini", "grok-3-mini-fast",
 		},
 	},
+}
+
+// CapabilityConfig defines a capability-to-model mapping
+// Capabilities allow automatic selection of the best agent/model for specific tasks
+type CapabilityConfig struct {
+	Agent string // Agent to use (e.g., "grok")
+	Model string // Model to use (e.g., "grok-code-fast-1")
+}
+
+// capabilityConfigs maps capability names to their agent/model configuration
+// Format: capability_name -> {agent, model}
+var capabilityConfigs = map[string]CapabilityConfig{
+	"image": {Agent: "grok", Model: "grok-code-fast-1"},
+	"cheap": {Agent: "opencode", Model: "google/gemini-2.5-flash"},
 }
 
 // Agent colors for visual distinction
@@ -523,7 +536,10 @@ func isValidAgent(name string) bool {
 
 // getCapabilityNames returns a comma-separated list of available capability names
 func getCapabilityNames() string {
-	names := agentselect.ListCapabilities()
+	names := make([]string, 0, len(capabilityConfigs))
+	for name := range capabilityConfigs {
+		names = append(names, name)
+	}
 	sort.Strings(names)
 	return strings.Join(names, ", ")
 }
@@ -927,17 +943,16 @@ func runCommand(cmdLine string, logFile *os.File) int {
 }
 
 func runAgent(prompt string, agent string, model string, capability string, sessionDir string, logFile *os.File) int {
-	sel, err := agentselect.Select(prompt, agent, model, capability)
-	if err != nil {
-		fmt.Println(errorStyle.Render(err.Error()))
-		fmt.Println(sessionStyle.Render(fmt.Sprintf("available capabilities: %s", getCapabilityNames())))
-		return 1
-	}
-	agent = sel.Agent
-	model = sel.Model
-	capability = sel.Capability
-	if sel.Rationale != "" {
-		fmt.Println(sessionStyle.Render("selection rationale: " + sel.Rationale))
+	// If capability is specified, override agent and model
+	if capability != "" {
+		if cfg, ok := capabilityConfigs[capability]; ok {
+			agent = cfg.Agent
+			model = cfg.Model
+		} else {
+			fmt.Println(errorStyle.Render(fmt.Sprintf("unknown capability: %s", capability)))
+			fmt.Println(sessionStyle.Render(fmt.Sprintf("available capabilities: %s", getCapabilityNames())))
+			return 1
+		}
 	}
 
 	// Find invoke-agent.sh relative to executable or use PATH
