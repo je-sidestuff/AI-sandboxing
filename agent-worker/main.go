@@ -68,6 +68,7 @@ type Instruction struct {
 	Instruction string `json:"instruction"`
 	Mode        string `json:"mode"` // "prompt" (-p) or "execute" (-e)
 	Agent       string `json:"agent,omitempty"`
+	Role        string `json:"role,omitempty"` // Optional role (e.g., "code-implementer") - applied to the agent executing this instruction
 	Timestamp   string `json:"timestamp,omitempty"`
 }
 
@@ -450,6 +451,42 @@ You are running in a sandboxed workspace. Here's what you need to know:
 ---
 
 `, workspace.WritePrimary, workspace.ReadDefault, workspace.ReadWorkunit, workspace.WritePrimary, workspace.RootPath)
+}
+
+// loadRoleContent loads the role definition from the roles directory.
+// Roles are stored in heuristic-request/roles/<role-name>/ROLE.md within the default read-space.
+// Returns empty string if role is not specified or cannot be loaded.
+func (w *AgentWorker) loadRoleContent(role string) string {
+	if role == "" {
+		return ""
+	}
+
+	// Role files are in the default read-space under heuristic-request/roles/<role>/ROLE.md
+	rolePath := filepath.Join(defaultReadSpacePath, "heuristic-request", "roles", role, "ROLE.md")
+	roleData, err := os.ReadFile(rolePath)
+	if err != nil {
+		log.Printf("[%s] Warning: failed to load role file %s: %v", w.workerID, rolePath, err)
+		return ""
+	}
+
+	log.Printf("[%s] Loaded role: %s", w.workerID, role)
+	return string(roleData)
+}
+
+// buildRolePreamble creates a role context section to prepend to instructions.
+// This informs the agent about its assigned role and responsibilities.
+func buildRolePreamble(roleContent string) string {
+	if roleContent == "" {
+		return ""
+	}
+
+	return fmt.Sprintf(`## Your Role
+
+%s
+
+---
+
+`, roleContent)
 }
 
 // prepareAgentConfig writes agent-specific configuration files to the workspace.
@@ -1107,9 +1144,12 @@ func (w *AgentWorker) executeAgent(folderPath string, inst *Instruction, agent s
 		modeFlag = "-e"
 	}
 
-	// Build the full instruction with workspace context preamble
-	// This helps the agent understand its filesystem boundaries
-	fullInstruction := buildWorkspacePreamble(workspace) + inst.Instruction
+	// Load role content if specified
+	roleContent := w.loadRoleContent(inst.Role)
+
+	// Build the full instruction with role and workspace context preambles
+	// This helps the agent understand its role and filesystem boundaries
+	fullInstruction := buildRolePreamble(roleContent) + buildWorkspacePreamble(workspace) + inst.Instruction
 
 	// Capture a full audit snapshot before invoking the agent (AGENT_AUDIT=FULL)
 	if auditErr := agentaudit.Capture(agentaudit.Input{

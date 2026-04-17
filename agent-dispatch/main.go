@@ -75,6 +75,7 @@ type Instruction struct {
 	Instruction string `json:"instruction"`
 	Mode        string `json:"mode"` // "prompt" (-p) or "execute" (-e)
 	Agent       string `json:"agent,omitempty"`
+	Role        string `json:"role,omitempty"` // Optional role (e.g., "code-implementer") - applied to the worker agent
 	Timestamp   string `json:"timestamp,omitempty"`
 }
 
@@ -93,6 +94,7 @@ type Dispatch struct {
 	Instruction     string            `json:"instruction"`               // The instruction to dispatch
 	Mode            string            `json:"mode,omitempty"`            // "prompt" or "execute" (default: "execute")
 	Agent           string            `json:"agent,omitempty"`           // Optional agent override
+	Role            string            `json:"role,omitempty"`            // Optional role for the worker agent (e.g., "code-implementer")
 	TargetRepo      string            `json:"target_repo,omitempty"`     // For in-repo/repo-isolation: "owner/repo"
 	PRTitle         string            `json:"pr_title,omitempty"`        // For in-repo/repo-isolation: optional PR title
 	PRBody          string            `json:"pr_body,omitempty"`         // For in-repo/repo-isolation: optional PR body
@@ -169,6 +171,7 @@ type FlowRecord struct {
 	PendingInstruction string    `json:"pending_instruction,omitempty"` // For approval (legacy): instruction to execute when approved
 	PendingMode        string    `json:"pending_mode,omitempty"`        // For approval (legacy): mode for pending instruction
 	PendingAgent       string    `json:"pending_agent,omitempty"`       // For approval (legacy): agent override for pending instruction
+	PendingRole        string    `json:"pending_role,omitempty"`        // For approval (legacy): role for pending instruction
 	PendingDispatch    *Dispatch `json:"pending_dispatch,omitempty"`    // For approval-gated flows: full dispatch to execute after approval
 
 	// Sequence-to-new-repo specific fields
@@ -945,6 +948,7 @@ func (d *Dispatcher) processDirectDispatch(unit DispatchUnit) error {
 		Instruction: unit.Dispatch.Instruction,
 		Mode:        unit.Dispatch.Mode,
 		Agent:       unit.Dispatch.Agent,
+		Role:        unit.Dispatch.Role,
 		Timestamp:   time.Now().Format(time.RFC3339),
 	}
 
@@ -1469,6 +1473,7 @@ func (d *Dispatcher) createApprovalGatedDispatch(unit DispatchUnit) error {
 		PendingInstruction: unit.Dispatch.Instruction,
 		PendingMode:        unit.Dispatch.Mode,
 		PendingAgent:       unit.Dispatch.Agent,
+		PendingRole:        unit.Dispatch.Role,
 	}
 	d.writeFlowRecord(flowRecord)
 
@@ -2907,6 +2912,7 @@ func (d *Dispatcher) handleApprovalMergedInstruction(record *FlowRecord) error {
 	pendingInstruction := record.PendingInstruction
 	pendingMode := record.PendingMode
 	pendingAgent := record.PendingAgent
+	pendingRole := record.PendingRole
 
 	// Also try to get from terraform outputs as backup
 	if pendingInstruction == "" {
@@ -2917,6 +2923,9 @@ func (d *Dispatcher) handleApprovalMergedInstruction(record *FlowRecord) error {
 	}
 	if pendingAgent == "" {
 		pendingAgent, _ = d.getTerraformOutput(record.TFConfigDir, "pending_agent")
+	}
+	if pendingRole == "" {
+		pendingRole, _ = d.getTerraformOutput(record.TFConfigDir, "pending_role")
 	}
 
 	if pendingInstruction == "" {
@@ -2946,6 +2955,7 @@ func (d *Dispatcher) handleApprovalMergedInstruction(record *FlowRecord) error {
 		Instruction: pendingInstruction,
 		Mode:        pendingMode,
 		Agent:       pendingAgent,
+		Role:        pendingRole,
 		Timestamp:   time.Now().Format(time.RFC3339),
 	}
 

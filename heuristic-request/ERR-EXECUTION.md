@@ -218,6 +218,19 @@ The `sequence_minutes_between` value should reflect the detail level:
 
 ---
 
+## Worker Role Assignment
+
+**CRITICAL**: All ERR dispatches MUST include the `"role": "code-implementer"` field. This ensures the worker agent understands it is responsible for writing actual code, not documentation.
+
+Workers receiving the `code-implementer` role are instructed to:
+- Write actual working code files (`.go`, `.ts`, `.py`, etc.)
+- Create complete implementations, not stubs or placeholders
+- Prioritize code output over documentation
+
+Without this role, workers may default to producing documentation instead of the transformed code artifacts that ERR requires.
+
+---
+
 ## Example Dispatch: MEDIUM Detail ERR
 
 Given heuristic input:
@@ -227,6 +240,7 @@ Given heuristic input:
 {
   "type": "sequence-to-new-repo",
   "sequence_repo_name": "AI-evo-experimental1",
+  "role": "code-implementer",
   "instruction": "Set up ERR working structure with folders: decomposition/, distillation/, recrystallization/. Create README.md documenting this as an ERR transformation of agent-events at MEDIUM detail level. Create MANIFEST.md to track particle inventory throughout the process.",
   "sequence_commands": [
     "Phase 1.1 - Fission: Analyze agent-events repository. Identify all functional molecules (major feature areas). Break molecules into atoms (individual functional units). Document in decomposition/MOLECULES.md and decomposition/ATOMS.md with dependency graph.",
@@ -257,6 +271,7 @@ Given heuristic input:
 {
   "type": "sequence-to-new-repo",
   "sequence_repo_name": "utils-v2",
+  "role": "code-implementer",
   "instruction": "Set up ERR structure with folders: decomposition/, distillation/, recrystallization/. Document as LOW detail ERR of my-utils in README.md.",
   "sequence_commands": [
     "Phase 1 - Molecular Analysis: Analyze my-utils and identify major functional molecules. Skip quark extraction. Document molecules and dependencies in decomposition/MOLECULES.md.",
@@ -281,6 +296,7 @@ Given heuristic input:
 {
   "type": "sequence-to-new-repo",
   "sequence_repo_name": "auth-service-v2",
+  "role": "code-implementer",
   "instruction": "Set up full ERR structure with decomposition/, distillation/, recrystallization/ and subdirectories quarks/, atoms/, molecules/. Create comprehensive MANIFEST.md. Document as HIGH detail ERR of auth-service in README.md.",
   "sequence_commands": [
     "Phase 1.1 - Initial Analysis: Analyze auth-service repository structure. Identify all major functional areas. Create initial documentation in decomposition/OVERVIEW.md.",
