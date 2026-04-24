@@ -66,7 +66,7 @@ In general this is a spiritual successor to the records functionality found in '
 
 ```prompt
 
-
+The 'ambiguous-agent' sub-project is a go binary that is the spiritual successor to 'sandbox/AI-sandboxing/ambiguous-agent/ambiguous-agent.sh'. It is NOT responsible to cover any interactive-shell-like-CLI any longer (like the old 'sandbox/AI-sandboxing/ambiguous-agent/' go functionality)
 
 ```
 
