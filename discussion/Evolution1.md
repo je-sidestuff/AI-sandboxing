@@ -66,15 +66,27 @@ In general this is a spiritual successor to the records functionality found in '
 
 ```prompt
 
-The 'ambiguous-agent' sub-project is a go binary that is the spiritual successor to 'sandbox/AI-sandboxing/ambiguous-agent/ambiguous-agent.sh'. It is NOT responsible to cover any interactive-shell-like-CLI any longer (like the old 'sandbox/AI-sandboxing/ambiguous-agent/' go functionality).
+The 'ambiguous-agent' sub-project is a go binary that is the spiritual successor to 'sandbox/AI-sandboxing/ambiguous-agent/invoke-agent.sh'. It is NOT responsible to cover any interactive-shell-like-CLI any longer (like the old 'sandbox/AI-sandboxing/ambiguous-agent/' go functionality or ambiguous-shell).
 
-Ambiguous agent will provide a generic interface for a call to be made to an agent without knowing which agent/model type will fulfill it. It will be session-aware and will always wrap calls with 'clauditable'. It will optionally provide access to agent records for one or more sessions with 'add dir' style functionality. Unlike the previous implementation which accepted flags p/e for prompt/execute - this time we accept p/r/w/x for prompt/read/write/execute. This corresponds to passing config to the underlying agent to (only chat without even reading files/read files only/read and write files/read and write files, and execute commands)
+Ambiguous agent will provide a generic interface for a call to be made to an agent without knowing which agent/model type will fulfill it. It will be session-aware and will always wrap calls with 'clauditable'. It will optionally provide access to agent records for one or more sessions with 'add dir' style functionality. Unlike the previous implementation which accepted flags p/e for prompt/execute - this time we accept p/r/w/x for prompt/read/write/execute. This corresponds to passing config to the underlying agent to (only chat without even reading files/read files only/read and write files/read and write files, and execute commands). If no 'mode' flag is passed it will default to 'read'.
 
 The project should have the same 'bootstrapping files' as 'clod' (docker and gitignore for binaries and test files, Makefile with the same targets, an accompanying .github/workflows/ file for CI with the same setup as the one for 'clod', Dockerfile) In this case we need to consider that our Docker file must include 'clauditable' as it is a runtime dependency.
 
+For this increment we will support agent listing and selection, but we will not yet support models other than the default. We will use visual flare similar to 'sandbox/AI-sandboxing/ambiguous-agent/main.go' to reflect which agent we are using. We will support the same set of agents we supported in 'sandbox/AI-sandboxing'.
+
+The test suite should be very simple to begin and should leverage 'clod' as the harnessed agent.
+
 ```
 
-### Step 4 - Move to 'heuristic-agent' next.
+### Step 4 - Move to 'federation-command' next.
+
+```prompt
+
+
+
+```
+
+### Step 5 - Move to 'heuristic-agent' next.
 
 ```prompt
 
