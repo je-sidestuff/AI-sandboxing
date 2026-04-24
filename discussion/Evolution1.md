@@ -33,34 +33,9 @@ We will make sure that the binary is dockerignored.
 
 ```
 
-### Step 1a
-
-```
-
-Please adjust the test functionality in 'research/AI-evo1/clod' so that it uses proper go tests to test the functionality instead of bash based tests.
-
-It appears that the binary is not requiring the same flags as 'claude' (claude code) in order to execute successfully. Remember we would need to pass a flag to claude to make it run in background and a flag to give it file write permissions. Please correct this.
-
-Please also add a workflow to 'research/AI-evo1/.github/workflows' which runs only on push to the 'test/clod' branch that will use the makefile to test the sub-project.
-
-Please also make sure that the binary and testing files are gitignored, like we talked about.
-
-Let's also make sure we are working with go version 1.25+ (no minimum requirement greater than 1.25.8 though)
-
-```
-
-### Step 1b
-
-```
-
-Minor corrections are needed after our last interaction:
-- The flags are not correct - we don't need '--background' and instead of '--allowedTools Write' we want '--permission-mode acceptEdits'. Feel free to look at '/workspaces/workspace/sandbox/AI-sandboxing/ambiguous-agent/invoke-agent.sh' to see exact flags needed.
-
-```
-
 ### Step 2 - Move to 'clauditable' next.
 
-```
+```prompt
 
 The next sub-project to build is 'clauditable'. This is the sub-project that will replace parts of agent-recorder and agent-events in 'sandbox/AI-sandboxing'. The project will run with a paradigm similar to the linux 'time' binary. (So we would call 'clauditable claude -p <prompt>' or 'clauditable clod -p <prompt>)
 
@@ -84,5 +59,21 @@ For its first functionality 'clauditable' will:
  - The tests should be in go and we want only a very basic couple to begin.
 
 In general this is a spiritual successor to the records functionality found in 'sandbox/AI-sandboxing', so feel free to use patterns there to eliminate ambiguities that arise.
+
+```
+
+### Step 3 - Move to 'ambiguous-agent' next.
+
+```prompt
+
+
+
+```
+
+### Step 4 - Move to 'heuristic-agent' next.
+
+```prompt
+
+
 
 ```
