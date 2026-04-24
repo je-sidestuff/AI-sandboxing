@@ -29,7 +29,7 @@ import urllib.error
 import urllib.request
 
 
-def github_get_object(url: str, pat: str) -> dict | None:
+def github_get_object(url, pat):
     """Fetch a single object from a GitHub API endpoint.
 
     Returns None if the resource does not exist (404), allowing callers
@@ -49,7 +49,7 @@ def github_get_object(url: str, pat: str) -> dict | None:
         raise
 
 
-def github_get_list(url: str, pat: str) -> list:
+def github_get_list(url, pat):
     """Fetch all pages from a GitHub API endpoint and return combined results.
 
     Returns empty list if the resource does not exist (404), allowing callers
@@ -80,7 +80,7 @@ def github_get_list(url: str, pat: str) -> list:
     return results
 
 
-def fetch_comments(pat: str, repo: str, pr_number: int) -> dict[str, str]:
+def fetch_comments(pat, repo, pr_number):
     """Return all comment bodies on the given PR as a map of timestamp -> body."""
     base = f"https://api.github.com/repos/{repo}"
     issue_url = f"{base}/issues/{pr_number}/comments?per_page=100"
@@ -94,7 +94,7 @@ def fetch_comments(pat: str, repo: str, pr_number: int) -> dict[str, str]:
     return comments
 
 
-def extract_revise_instructions(comments: dict[str, str]) -> list[str]:
+def extract_revise_instructions(comments):
     """Return the instruction text for any comment starting with 'REVISE:'."""
     instructions = []
     for body in comments.values():
@@ -105,7 +105,7 @@ def extract_revise_instructions(comments: dict[str, str]) -> list[str]:
     return instructions
 
 
-def extract_sequence_instructions(comments: dict[str, str]) -> list[str]:
+def extract_sequence_instructions(comments):
     """Return the instruction text for any comment starting with 'SEQUENCE:'."""
     instructions = []
     for body in comments.values():
@@ -116,7 +116,7 @@ def extract_sequence_instructions(comments: dict[str, str]) -> list[str]:
     return instructions
 
 
-def fetch_pr_state(pat: str, repo: str, pr_number: int) -> dict:
+def fetch_pr_state(pat, repo, pr_number):
     """Fetch PR state including merged status from GitHub API.
 
     Returns default "not found" state if the repo or PR does not exist (404).
