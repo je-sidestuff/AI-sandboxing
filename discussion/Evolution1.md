@@ -66,7 +66,11 @@ In general this is a spiritual successor to the records functionality found in '
 
 ```prompt
 
-The 'ambiguous-agent' sub-project is a go binary that is the spiritual successor to 'sandbox/AI-sandboxing/ambiguous-agent/ambiguous-agent.sh'. It is NOT responsible to cover any interactive-shell-like-CLI any longer (like the old 'sandbox/AI-sandboxing/ambiguous-agent/' go functionality)
+The 'ambiguous-agent' sub-project is a go binary that is the spiritual successor to 'sandbox/AI-sandboxing/ambiguous-agent/ambiguous-agent.sh'. It is NOT responsible to cover any interactive-shell-like-CLI any longer (like the old 'sandbox/AI-sandboxing/ambiguous-agent/' go functionality).
+
+Ambiguous agent will provide a generic interface for a call to be made to an agent without knowing which agent/model type will fulfill it. It will be session-aware and will always wrap calls with 'clauditable'. It will optionally provide access to agent records for one or more sessions with 'add dir' style functionality. Unlike the previous implementation which accepted flags p/e for prompt/execute - this time we accept p/r/w/x for prompt/read/write/execute. This corresponds to passing config to the underlying agent to (only chat without even reading files/read files only/read and write files/read and write files, and execute commands)
+
+The project should have the same 'bootstrapping files' as 'clod' (docker and gitignore for binaries and test files, Makefile with the same targets, an accompanying .github/workflows/ file for CI with the same setup as the one for 'clod', Dockerfile) In this case we need to consider that our Docker file must include 'clauditable' as it is a runtime dependency.
 
 ```
 
