@@ -66,6 +66,8 @@ In general this is a spiritual successor to the records functionality found in '
 
 ```prompt
 
+Next we will create 'research/AI-evo1/ambiguous-agent'.
+
 The 'ambiguous-agent' sub-project is a go binary that is the spiritual successor to 'sandbox/AI-sandboxing/ambiguous-agent/invoke-agent.sh'. It is NOT responsible to cover any interactive-shell-like-CLI any longer (like the old 'sandbox/AI-sandboxing/ambiguous-agent/' go functionality or ambiguous-shell).
 
 Ambiguous agent will provide a generic interface for a call to be made to an agent without knowing which agent/model type will fulfill it. It will be session-aware and will always wrap calls with 'clauditable'. It will optionally provide access to agent records for one or more sessions with 'add dir' style functionality. Unlike the previous implementation which accepted flags p/e for prompt/execute - this time we accept p/r/w/x for prompt/read/write/execute. This corresponds to passing config to the underlying agent to (only chat without even reading files/read files only/read and write files/read and write files, and execute commands). If no 'mode' flag is passed it will default to 'read'.
@@ -82,11 +84,41 @@ The test suite should be very simple to begin and should leverage 'clod' as the 
 
 ```prompt
 
+We will create the 'research/AI-evo1/federation-command' sub-project next.
 
+The 'federation-command' sub-project is a go binary that is the spiritual successor to 'sandbox/AI-sandboxing/ambiguous-agent/ambiguous-shell'. It is responsible for covering the interactive-shell-like-CLI functionality (the old 'sandbox/AI-sandboxing/ambiguous-agent/' go functionality).
+
+Federation command is a CLI with the same appearance as the previous ambiguous-shell and roughly the same functionality. It now wraps all commands with 'clauditable' - setting the agent to 'none' when the human/keyboard driver is using non-agentic commands. We will add a functionality to clauditable where we prevent double-wrapping by setting an environment variable 'IS_CLAUDITABLE' within the scope of clauditable and detecting it on a subsequent invocation so we can prevent double-logging.
+
+For this first increment we will replicate the visual appearance, the agent-selection, and the 'agent' invocation command (now with -p/r/w/x instead of -p/e). We will also add a NOT_YET_IMPLEMENTED.md describing the functions not yet brought over from legacy.
+
+Make sure the visual style is consistent with 'research/AI-evo1/ambiguous-agent'.
+
+The project should have the same 'bootstrapping files' as 'clod' (docker and gitignore for binaries and test files, Makefile with the same targets, an accompanying .github/workflows/ file for CI with the same setup as the one for 'clod', Dockerfile) In this case we need to consider that our Docker file must include 'clauditable' as it is a runtime dependency. We'll want a similar Makefile capability to deploy dependencies locally, like we have in ambiguous-agent.
+
+For our test suite we will simply support a test of a 'version' entrypoint for now, not the interative mode. In the reply please discuss possible options for testing the interactive mode.
 
 ```
 
-### Step 5 - Move to 'heuristic-agent' next.
+### Step 5 - Tighten up ring-0 and the outer ring before moving to async functions
+
+```prompt
+
+Now that the ring-0 sub-projects (clod, clauditable, ambiguous-agent) and the first outer-ring (federation-command) are completed - we will tighten up some functionality and add some additional documentation before proceeding to the async functions.
+
+Thinking...
+- Conversation files?
+- Ride-alongs? 
+- Probsbly at least brief-tours
+- Probably full CI and pushing a container
+- Start visualization?
+- Start record processing?
+- Probably add ability to provide records to agent, and default strategy.
+- Look at universal syntax for invoking commands from FC?
+
+```
+
+### Step 6 - Move to 'heuristic-agent' next.
 
 ```prompt
 
