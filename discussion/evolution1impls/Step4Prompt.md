@@ -80,3 +80,107 @@ The tests focus on non-interactive functionality (version flag, helper functions
 The recommended approach is to refactor the readline handling to accept interfaces (option 3) for unit tests, combined with occasional PTY-based integration tests.
 
 Records saved to: /workspaces/agent-records/session-2026-04-23_18-49-19_1776970159/2026-04-25_15-00-50_1777129250
+
+
+## Reprompt A
+
+We have updated 'research/AI-evo1/federation-command' and things are off to a good start. We have a few minor items to fix.
+
+We have the same issue we previously had on ambiguous-agent where we are using a session format like legacy instead of the newer session format.
+
+We should also modify our list-models functionality so that it happens in ambiguous-agent instead of federation command, and federation command leverages that function. We'll want to make sure it's clauditable.
+
+In general we will be following a paradigm where ambiguous-agent fulfills all agent-related commands/lookups and federation command is a wrapper CLI that gives us continuity. In future steps it will also gain interfaces to the async functionalities.
+
+
+## Reply 
+
+Now let me provide a summary of the changes made:
+
+## Summary
+
+I've implemented the fixes from "Reprompt A" in the Step4Prompt.md:
+
+### 1. Fixed Session Format in federation-command
+
+**File:** `research/AI-evo1/federation-command/main.go`
+
+Changed the session ID format from the legacy `session-<timestamp>_<unix>` prefix style to the newer clauditable-compatible format (just `<timestamp>_<unix>` without the `session-` prefix).
+
+Before:
+```go
+sessionID := fmt.Sprintf("%s_%d", now.Format("2006-01-02_15-04-05"), now.Unix())
+sessionDir := filepath.Join(recordsPath, "session-"+sessionID)
+```
+
+After:
+```go
+sessionID := os.Getenv(EnvAgentSession)
+if sessionID == "" {
+    sessionID = fmt.Sprintf("%s_%d", now.Format("2006-01-02_15-04-05"), now.Unix())
+}
+sessionDir := filepath.Join(recordsPath, sessionID)
+```
+
+Also fixed environment variable handling:
+- `AGENT_RECORDS_PATH` is now set to `recordsPath` (not `sessionDir`)
+- `AGENT_SESSION` is set to `sessionID`
+
+### 2. Added `--list-models` Command to ambiguous-agent
+
+**File:** `research/AI-evo1/ambiguous-agent/main.go`
+
+- Added `--list-models` flag
+- Added `printModelList()` function that displays available models for a specified agent
+- Updated usage text with new option and examples
+- The function validates the agent exists, checks if it supports model selection, and displays the model list with visual styling
+
+### 3. Updated federation-command to Use ambiguous-agent for list-models
+
+**File:** `research/AI-evo1/federation-command/main.go`
+
+Replaced the local `listModels()` implementation with one that:
+1. Calls `ambiguous-agent --list-models -a <agent>` via clauditable (when available)
+2. Falls back to direct `ambiguous-agent` call if already in clauditable context
+3. Falls back to local static model list if ambiguous-agent is unavailable
+4. Adds "current selection" status after the ambiguous-agent output
+
+This follows the paradigm where **ambiguous-agent fulfills all agent-related commands/lookups** and **federation-command is a wrapper CLI** that provides continuity and user interface.
+
+Records saved to: /workspaces/agent-records/session-2026-04-23_18-49-19_1776970159/2026-04-26_11-08-21_1777201701
+
+
+## Reprompt A
+
+Let's also add a clean-local-dependencies target to the makefiles in all 'research/AI-evo1' sub-projects that offer the local-dpendencies paradigm.
+
+We should also create a makefile right in 'research/AI-evo1' that has a test target which tests all sub-projects.
+
+
+## Reply
+
+I've completed the changes from Reprompt A:
+
+## Summary
+
+### 1. Added `clean-local-dependencies` target to Makefiles
+
+**ambiguous-agent/Makefile** and **federation-command/Makefile** now include:
+```makefile
+clean-local-dependencies:
+        @echo "Cleaning local dependencies..."
+        rm -f clauditable clod  # (or clauditable ambiguous-agent clod for federation-command)
+        @echo "Local dependencies cleaned"
+```
+
+### 2. Created `research/AI-evo1/Makefile`
+
+A new parent Makefile with targets for managing all sub-projects:
+
+- **`test`** / **`test-all`** - Runs tests in all sub-projects (clauditable, clod, ambiguous-agent, federation-command)
+- **`build-all`** - Builds all sub-projects
+- **`clean-all`** - Cleans all sub-projects
+
+The test target iterates through each sub-project in dependency order and fails fast if any test fails.
+
+Records saved to: /workspaces/agent-records/session-2026-04-23_18-49-19_1776970159/2026-04-26_11-56-23_1777204583
