@@ -104,19 +104,23 @@ For our test suite we will simply support a test of a 'version' entrypoint for n
 
 ```prompt
 
-Now that the ring-0 sub-projects (clod, clauditable, ambiguous-agent) and the first outer-ring (federation-command) are completed - we will tighten up some functionality and add some additional documentation before proceeding to the async functions.
+Now that the ring-0 sub-projects (clod, clauditable, ambiguous-agent) and the first outer-ring (federation-command) are completed in research/AI-evo1 - we will tighten up some functionality and add some additional documentation before proceeding to the async functions.
 
+We will add content for a type of documentary called 'tours'. These documents are similar to system smoke check manuals, but are slightly verbose as they explain more of what is happening with each step. The most important part of these docs is the set of steps - each surrounded by triple-backtics - that if executed would run successfully and 'tell a story'. The 'brief tour' is the less verbose tour, it accompanies a much more thorough and slightly permutative alternative. For now the 'brief-tour.md' will link to a 'full-tour.md' that is just an empty stub.
+
+We will create a CI routine that when pushed to release/* all tests will be run for all sub-projects, and a container will be built and pushed to a ghcr (similar to research/terraform-example-helpers). We would expect to be able to run this container and have full federation-command functionality. (Standalone or as a devcontainer base)
+
+We will also add the capability to provide records to an agent for an invocation. We will accomplish this by copying all the files for a session to a tempdir which will be immediately deleted afterward. We'll add-dir or similar to give the agent access to these files. The default session will be selected by default, but zero or more may be specified. The functionality will be present in ambiguous-agent and federation-command. (Core functionality in AA, an ability to call it with a smart interface in FC)
+
+```
+
+potentially soon:
 Thinking...
 - Conversation files?
 - Ride-alongs? 
-- Probsbly at least brief-tours
-- Probably full CI and pushing a container
 - Start visualization?
 - Start record processing?
-- Probably add ability to provide records to agent, and default strategy.
 - Look at universal syntax for invoking commands from FC?
-
-```
 
 ### Step 6 - Move to 'heuristic-agent' next.
 
