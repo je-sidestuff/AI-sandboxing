@@ -104,7 +104,7 @@ For our test suite we will simply support a test of a 'version' entrypoint for n
 
 ```prompt
 
-Now that the ring-0 sub-projects (clod, clauditable, ambiguous-agent) and the first outer-ring (federation-command) are completed in research/AI-evo1 - we will tighten up some functionality and add some additional documentation before proceeding to the async functions.
+Now that the ring-0 sub-projects (clod, clauditable, ambiguous-agent) and the first outer-ring (federation-command) are completed in 'research/AI-evo1' - we will tighten up some functionality and add some additional documentation before proceeding to the async functions.
 
 We will add content for a type of documentary called 'tours'. These documents are similar to system smoke check manuals, but are slightly verbose as they explain more of what is happening with each step. The most important part of these docs is the set of steps - each surrounded by triple-backtics - that if executed would run successfully and 'tell a story'. The 'brief tour' is the less verbose tour, it accompanies a much more thorough and slightly permutative alternative. For now the 'brief-tour.md' will link to a 'full-tour.md' that is just an empty stub.
 
