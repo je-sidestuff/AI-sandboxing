@@ -116,7 +116,7 @@ We will also add the capability to provide records to an agent for an invocation
 
 potentially soon:
 Thinking...
-- Conversation files?
+- Conversation files? (Condocs)
 - Ride-alongs? 
 - Start visualization?
 - Start record processing?
@@ -126,6 +126,10 @@ Thinking...
 
 ```prompt
 
+We will create the 'research/AI-evo1/heuristic-agent' sub-project next.
 
+The 'heuristic-agent' sub-project is a go binary that is the spiritual successor to 'sandbox/AI-sandboxing/agent-worker' and 'sandbox/AI-sandboxing/heuristic-request'. It is responsible for managing asynchronous invocations of our AI agents through ambiguous-agent.
+
+The heuristic-agent now handles the creation of 'slopspaces' as a first-class concern. It has one entrypoint which is a watch-loop, like the legacy agent-worker and heuristic-request, and another to manage read-spaces, write-spaces, and slopspaces.
 
 ```
