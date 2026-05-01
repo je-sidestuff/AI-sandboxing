@@ -132,4 +132,8 @@ The 'heuristic-agent' sub-project is a go binary that is the spiritual successor
 
 The heuristic-agent now handles the creation of 'slopspaces' as a first-class concern. It has one entrypoint which is a watch-loop, like the legacy agent-worker and heuristic-request, and another to manage read-spaces, write-spaces, and slopspaces.
 
+Compared to the legacy implementation the separation of work and work signals is also more distinct. Work signals will denote the location of work (which may be a free directory on the host or a slopspace. In practice we will only deploy in-place work locally, remote dispatches will always be in slopspaces) as well as the agent's role and prompt. The work signals will be used as a lock file and progress report as well as the instruction itself, but will not contain *content* that is worked on. The heuristic-agent will work with a one-per-host model, but will be scalable via containerization.
+
+The heuristic-agent will be capable of taking the slopspace from the slopspaces directory and deploying it to the '/agent' dir before work and returning it afterward. We can keep sensitive bits like the .git directory in the slopspace to isolate sensitive operation capability.
+
 ```
