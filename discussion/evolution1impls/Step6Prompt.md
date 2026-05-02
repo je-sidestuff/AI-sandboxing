@@ -223,4 +223,24 @@ In plain language - the slopspace lifecycle follows the process of:
 - If the slopspace concludes it will be removed from the directory, having had all actions performed
 - If the slopspace continues it will undergo another deployment and begin again at that phase (this may go on for any number of iterations)
 
+### **3. Work Signal vs Content Separation**
+
+**WORKING.json structure**:
+```json
+{
+  "id": "unique-signal-id",
+  "work_location": "/host-agent-files/slopspaces/pending/my-slopspace",
+  "work_type": "slopspace",  // or "in-place" for local directories
+  "role": "code-implementer",
+  "prompt": "Implement the feature described in FEATURE.md",
+  "agent": "claude",
+  "mode": "execute",
+  "status": "pending",  // pending -> processing -> completed/failed
+  "created_at": "...",
+  "started_at": null,
+  "completed_at": null
+}
+```
+
+**Decision needed:** Should the signal file be updated in-place (like legacy PROCESSING.md pattern) or should status be tracked separately?
 
