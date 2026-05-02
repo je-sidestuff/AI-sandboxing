@@ -179,13 +179,17 @@ We will take the following paths:
 
 Option B.
 
+Ensure that we accept an --agent-type if we are entering the watch loop, which may be 'heuristic-request' or 'agent-worker'.
+
+---
+
 ### **2. Slopspace Lifecycle**
 
 **Decision:** What is the slopspace lifecycle?
 - **Creation**: Heurist-agent creates the slopspace directly, from the 'go' portion of the overall runtime, not from within the scope of the agenty invocation.
 - **Structure**: Inside a slopspace we find read-spaces and write-spaces. Examine legacy agent-worker for more details.
-- **Deployment**: For deployment we MOVE the internals of the slopspace to /agent - not copy or symlink.
-- **Return**: Move back to slopspaces dir. We will not be thorough with cleanup on our first implementation, we will handle it subsequently. We'll start by assuming happy path.
+- **Deployment**: For deployment we MOVE the internals of the slopspace to /agent subdirs - not copy or symlink.
+- **Return**: Move back to slopspaces dir.
 
 **Folder structure**:
 ```
@@ -198,16 +202,26 @@ Option B.
 │       │   ├── repos/         (repos which we can see but not impact)
 │       │   └── files/         (arbitrary files we can read)
 │       └── write-spaces/      (places the agent may write - if modified will be reflected in the outside world)
-│           ├── agent-records/ (ALWAYS available for the agent to write)
+│           ├── agent-records/ (always available for the agent to write)
 │           ├── dtt-canvas/    (agent may use declarative-tool-tools to make changes and/or request feedback)
-
 │           ├── repos/         (repos which we can see but not impact)
-│           └── files/         (arbitrary files we can read)
+│           └── files/         (arbitrary folders and files we can modify)
 ├── work/
-│   ├── agent/        (slopspaces currently deployed)
-│   └── <signal-id>/
-│       └── SIGNAL.json  (work signal defining what to do)
+│   ├── ongoing/                                             (in-progress work)
+│   │   └── WORKING-cat_webserver_container-1777744989.jsonl (ongoing work)
+│   └── complete/
+│       └── COMPLETE-cat_webserver_1-1777744989.jsonl (completed work)
 └── agent-records/     (execution records)
+/agent/
+├── agent-worker/        (location where the currently deployed 'agent-worker' agent type slopspace MAY be deployed)
+│   ├── <metadata files> (files we use to identify our situation when the 'agent-worker' agent type has a slopspace deployed)
+│   ├── read-spaces/     (this folder exists when the 'agent-worker' agent type has a slopspace deployed)
+│   └── write-spaces/    (this folder exists when the 'agent-worker' agent type has a slopspace deployed)
+└── heuristic-request/   (location where the currently deployed 'heuristic-request' agent type slopspace MAY be deployed)
+    ├── <metadata files> (files we use to identify our situation when the 'heuristic-request' agent type has a slopspace deployed)
+    ├── read-spaces/     (this folder exists when the 'heuristic-request' agent type has a slopspace deployed)
+    └── write-spaces/    (this folder exists when the 'heuristic-request' agent type has a slopspace deployed)
+
 ```
 
 In plain language - the slopspace lifecycle follows the process of:
@@ -223,24 +237,84 @@ In plain language - the slopspace lifecycle follows the process of:
 - If the slopspace concludes it will be removed from the directory, having had all actions performed
 - If the slopspace continues it will undergo another deployment and begin again at that phase (this may go on for any number of iterations)
 
+---
+
 ### **3. Work Signal vs Content Separation**
 
-**WORKING.json structure**:
+**WORKING-<name>-<creation_timestamp>.jsonl structure**:
 ```json
 {
   "id": "unique-signal-id",
-  "work_location": "/host-agent-files/slopspaces/pending/my-slopspace",
+  "work_location": "", // Only populated for 'in-place' type work -- we can omit this optional field or leave it blank.
   "work_type": "slopspace",  // or "in-place" for local directories
+  "agent_type": "agent-worker",  // or "heuristic-request"=
   "role": "code-implementer",
   "prompt": "Implement the feature described in FEATURE.md",
   "agent": "claude",
-  "mode": "execute",
+  "model": "opus",
+  "holder": "unique-dispatcher-id", // The controller currently owning this work. Set blank when an agent finishes its job and it is waiting for a new owner.
   "status": "pending",  // pending -> processing -> completed/failed
   "created_at": "...",
   "started_at": null,
+  "updated_at": "...", // The most recent update, made by the current 'holder'
   "completed_at": null
+}
+
+{
+  "event_id": "unique-event-id", // Populated when an agent performs an action such as taking ownership and beginning work
+  "status_update": "",           // Denotes status change
+  "comment": ""                  // Amplifying information if necessary
 }
 ```
 
-**Decision needed:** Should the signal file be updated in-place (like legacy PROCESSING.md pattern) or should status be tracked separately?
+Work signals are updated in place until completion, at which time they move from 'ongoing' to 'completed' and change their name to 'COMPLETE-<name>-<creation_timestamp>.jsonl'.
 
+---
+
+### **4. Environment Variables and Defaults**
+
+**env vars**:
+- `SLOPSPACES_DIR`       - default: `/host-agent-files/slopspaces`
+- `WORK_SIGNALS_DIR`     - default: `/host-agent-files/work`
+- `AGENT_SLOPSPACE_ROOT` - default: `/agent/<agent-type>` (where slopspaces are deployed)
+- `AGENT_RECORDS_PATH`   - default: `/host-agent-files/agent-records`
+
+---
+
+### **5. Clauditable Integration**
+
+The prompt says:
+> "We will follow the same paradigm with making our calls clauditable (unless they already are by virtue of nesting)."
+
+What we meant was "the same paradigm as federation-command".
+
+We take an option most similar to B, but not the same - 
+- **Option B**: Wrap agent invocations with the `clauditable` binary
+
+We actually want to wrap all OTHER system calls in clauditable, because when we call ambiguous-agent we expect it to wrap those calls.
+
+---
+
+### **6. Docker Runtime Dependencies**
+
+The prompt notes:
+> "Our Docker file must include its runtime dependencies."
+
+This specifically means only the runtime dependencies within this monorepo - we will assume that the container consumer will bring their own coding agents.
+
+So within this project we will include 'clod', 'ambiguous-agent', 'clauditable', etc.
+
+So for the EXTERNAL dependencies:
+- **Option B**: Expect agents to be mounted/available at runtime
+
+Also note that we will include NONE of the content from legacy, it will all be built up from the new implementations available in 'research/AI-evo1'. ('invoke-aganet.sh was mentioned, but we'd only consider the new ambiguous-agent go binary going forward.)
+
+---
+
+### **7. One-Per-Host Model with Containerization**
+
+This understanding was fully correct.
+
+---
+
+Now go ahead and implement this understanding!
