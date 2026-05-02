@@ -136,4 +136,14 @@ Compared to the legacy implementation the separation of work and work signals is
 
 The heuristic-agent will be capable of taking the slopspace from the slopspaces directory and deploying it to the '/agent' dir before work and returning it afterward. We can keep sensitive bits like the .git directory in the slopspace to isolate sensitive operation capability.
 
+Both the work signals and the slopspaces directory will be drivable through environment variables and default to different subdirectories of /host-agent-files.
+
+Remember to use the legacy 'sandbox/AI-sandboxing' as a reference to fill in some blanks.
+
+The project should have the same 'bootstrapping files' as other sub-projects like  'clod' (docker and gitignore for binaries and test files, Makefile with the same targets, an accompanying .github/workflows/ file for CI with the same setup as the one for 'clod', Dockerfile) In this case we need to consider that our Docker file must include its runtime dependencies. We'll want a similar Makefile capability to deploy dependencies locally, like we have in ambiguous-agent.
+
+We will follow the same paradigm with making our calls clauditable (unless they already are by virtue of nesting).
+
+If anything is too ambiguous in these instructions please document the decision paths rather than proceeding blindly and we will perform the work across multiple iterations.
+
 ```
