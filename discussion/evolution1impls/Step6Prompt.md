@@ -209,3 +209,18 @@ Option B.
 │       └── SIGNAL.json  (work signal defining what to do)
 └── agent-records/     (execution records)
 ```
+
+In plain language - the slopspace lifecycle follows the process of:
+- Creation of the slopspace -- the slopspace is created in the slopspaces directory with its new unique ID, directories are created
+- Read spaces and write spaces are populated in the slop space - usually from the read-spaces and/or write-spaces directory
+- The slopspace is deployed to the appropriate directory within /agent tree (the metadata layer and sensitive files remain in slopspaces, the agent-concerning files are moved into place)
+- The agent is invoked within the slopspace
+- Depending on a variety of factors, the slopspace may be left in-place, or may be returned back to the slopspaces directory (write spaces are moved back, read spaces are discarded and repopulated in slopspace within  slopspaces dir)
+- If the slopspace is left in place another agent invocation will eventually ensue
+- If the slopspace is returned it will be responded to, and then it will either continue or conclude
+- When the slopspace is responded to, deterministic agents will ingest the content and will then execute commands and/or submit proposals for approval
+- The response phase will stay open until all pending auto-approved commands have been executed and proposals have been approved/denied, then it will end and the slopspace will continue/conclude
+- If the slopspace concludes it will be removed from the directory, having had all actions performed
+- If the slopspace continues it will undergo another deployment and begin again at that phase (this may go on for any number of iterations)
+
+
