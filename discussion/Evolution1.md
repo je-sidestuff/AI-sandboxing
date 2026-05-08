@@ -122,7 +122,9 @@ Thinking...
 - Start record processing?
 - Look at universal syntax for invoking commands from FC?
 
-### Step 6 - Move to 'heuristic-agent' next.
+### Step 6 - Create 'heuristic-agent' next.
+
+Note: See Step6PromptAttempt1Reference.md for a poor first implementation attempt.
 
 ```prompt
 
@@ -145,5 +147,72 @@ The project should have the same 'bootstrapping files' as other sub-projects lik
 We will follow the same paradigm with making our calls clauditable (unless they already are by virtue of nesting).
 
 If anything is too ambiguous in these instructions please document the decision paths rather than proceeding blindly and we will perform the work across multiple iterations.
+
+```
+
+NOTE: We take a quick break here to switch FC to be a bubbletea based implementation.
+
+We also added a special 'dynapane' dynamic panel which we will use for interactive functionality.
+
+### Step 7 - Make another stop on 'federation-command' to add the first interactive functionality - the 'ridealong'.
+
+```prompt
+
+Next we will add the first interactive functionality to 'research/AI-evo1/federation-command'.
+
+We will add this functionality in a highly decoupled way, minimizing the intertwining in the main code file as much as we can.
+
+The first thing we want to do is add a 'blinker slot' to the far left of our command prompt.
+
+Where our command prompt used to look like this:
+[127] [claude] .../AI-evo1/federation-command > 
+
+It should now look like this:
+[ ][127] [claude] .../AI-evo1/federation-command > 
+
+The blinker edges should be a light blue (like the info commands displaying local binaries being used).
+
+Before the user has entered any text the blinker should, by default, blink with a hollow grey block at a 'standard cursor frequency'.
+
+If the user presses right arrow or types any characters that persist in the pending command prompt entry then this blinker should become blank and stop blinking.
+
+If the user removes all text from the pending command entry and presses down, backspace, or left, then the blinker should begin blinking again.
+
+If the user presses left while the blinker is blinking with a hollow grey block the cursor will then disappear from the entry prompt and the blinker will blink with a solid grey block. This is called 'blinker select' mode.
+
+The user may exit 'blinker select' mode by pressing right. If any other keys are pressed while in this mode the blinker slot will flash but nothing will happen. This will alert the user to the fact that they are in 'blinker select' mode.
+
+```
+
+### Step 8 - Add the functionality to 'heuristic-agent' to support testing a repo-isolation or branch-isolation workflow
+
+```prompt
+
+Now that we have the beginning of 'heuristic-agent' in place we want to add minimal support for branch-isolation flows. We will update 'research/AI-evo1/heuristic-agent' with this functionality.
+
+Unlike our legacy implementation in 'sandbox/AI-sandboxing', we will support the full flow through heuristic-agent functionality with manual user interactions. (heuristic-agent does not automate or respond, it only provides functions to perform the atomic operations needed).
+
+First we will modify all references in AI-evo1 from 'read-spaces' and 'write-spaces' to 'readspaces' and 'writespaces'.
+
+Our repository interactions will all be within 'readspaces' and 'writespaces', the file system areas which we dispatch repository content to.
+
+The lifecycle of a repository readspace is as follows:
+- We create a 'repo readspace' with the command 'readspace repo clone <owner>/<repo>'
+  - This pulls the readspace into the 'readspaces dir' beside the 'slopspaces dir' (defaults to /host-agent-files/readspaces)
+  - We store the repository on the main branch and every time we touch it we will 'pull --rebase' it
+  - We always clone the repo in question using the github PAT, which is stored in the TF_VAR_github_pat env var (for global cross-compatibility)
+  - We assume 'gh' is available and on the path
+  - The repo is stored unmodified
+- We add a repo readspace to a slopspace with the 'slopspace add-readspace repo <slopspace-id> <owner>/<repo>'
+  - We may optionally specify a '--ref <branch|tag|commit>' argument
+  - When we add the readspace to a slopspace the following takes place:
+    - The repo is copied to the slopspace
+    - The we switch to the ref in the copied repo
+    - We delete the full '.git' directory
+- Now we do not care if an agent modifies the files here because they will not be put back anywhere, they are disposable
+
+The lifecycle of a repository writespace is as follows:
+- We create a 'repo writespace' with the command 'writespace repo clone <owner>/<repo>'
+  - This pulls the writespace into the 'writespaces dir' beside the 'slopspaces dir' (defaults to /host-agent-files/writespaces)
 
 ```
