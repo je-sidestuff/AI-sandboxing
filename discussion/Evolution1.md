@@ -215,4 +215,9 @@ The lifecycle of a repository writespace is as follows:
 - We create a 'repo writespace' with the command 'writespace repo clone <owner>/<repo>'
   - This pulls the writespace into the 'writespaces dir' beside the 'slopspaces dir' (defaults to /host-agent-files/writespaces)
 
+
+When these ones go to slopspaces we move the .git to writespaces-secure after selecting our ref.
+We can call 'slopspace write all' or 'slopspace write <repo>' to push to our ref.
+If we found 'revise' comments we can always re-dispatch.
+Let's not think about (pull/refresh) yet.
 ```
