@@ -201,23 +201,31 @@ The lifecycle of a repository readspace is as follows:
   - This pulls the readspace into the 'readspaces dir' beside the 'slopspaces dir' (defaults to /host-agent-files/readspaces)
   - We store the repository on the main branch and every time we touch it we will 'pull --rebase' it
   - We always clone the repo in question using the github PAT, which is stored in the TF_VAR_github_pat env var (for global cross-compatibility)
-  - We assume 'gh' is available and on the path
+  - We assume 'gh' is available and on the path for our git operations (including clone)
   - The repo is stored unmodified
 - We add a repo readspace to a slopspace with the 'slopspace add-readspace repo <slopspace-id> <owner>/<repo>'
   - We may optionally specify a '--ref <branch|tag|commit>' argument
   - When we add the readspace to a slopspace the following takes place:
-    - The repo is copied to the slopspace
-    - The we switch to the ref in the copied repo
+    - The repo is copied to the slopspace (<slopspace>/readspaces/repos/<owner>/<repo>)
+    - Then we switch to the ref in the copied repo
     - We delete the full '.git' directory
 - Now we do not care if an agent modifies the files here because they will not be put back anywhere, they are disposable
+- We can remove a repo readspace with 'readspace repo delete <owner>/<repo>'
 
 The lifecycle of a repository writespace is as follows:
 - We create a 'repo writespace' with the command 'writespace repo clone <owner>/<repo>'
   - This pulls the writespace into the 'writespaces dir' beside the 'slopspaces dir' (defaults to /host-agent-files/writespaces)
+  - We store the repository on the main branch and every time we touch it we will 'pull --rebase' it
+  - We always clone the repo in question using the github PAT, which is stored in the TF_VAR_github_pat env var (for global cross-compatibility)
+  - We assume 'gh' is available and on the path for our git operations
+  - The repo is stored unmodified
+- We add a repo writespace to a slopspace with the 'slopspace add-writespace repo <slopspace-id> <owner>/<repo>'
+  - We may optionally specify a '--ref <branch>' argument (must be a branch for writespace)
+  - When we add the writespace to a slopspace the following takes place:
+    - The repo is copied to the slopspace (<slopspace>/writespaces/repos/<owner>/<repo>)
+    - Then we switch to the ref in the copied repo
+    - We move the full '.git' directory to the 'writespaces-secure dir' (<slopspace>/writespaces-secure/repos/<owner>/<repo>) - this will not be copied to '/agent' when the slopspace is deployed
+  - When the slopspace is returned we are able to call 'write' with 'slopspace write <slopspace-id> all' or 'slopspace write repo <slopspace-id> <owner>/<repo>' - this will push to the branch
 
-
-When these ones go to slopspaces we move the .git to writespaces-secure after selecting our ref.
-We can call 'slopspace write all' or 'slopspace write <repo>' to push to our ref.
-If we found 'revise' comments we can always re-dispatch.
-Let's not think about (pull/refresh) yet.
+Please also create a dedicated ridealong document to execute this process. Use this repo as the target and clod as the agent. (See federation-command for details on how to create a good ridealong)
 ```
