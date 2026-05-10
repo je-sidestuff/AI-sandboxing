@@ -13,3 +13,5 @@ Different:
 Initial iteration - we will use details from this description throughout the boostrabbing but will only complete a minimal increment here:
 - We will populate our initial execution module, example, and test
 - Our test will prove that we may use our example to execute a branch-isolation flow to create a new branch, create a slopspace, populate a writespace with a new test repo and add it to the slopspace, deploy the slopspace, execute changes, and return the slopspace and submit it for a PR review. Once the PR is submitted the test will merge it and we will verify the example sees the execution is complete.
+- The example will create a repo so that the evo1 repo does not get polluted with branches
+- There will be a distinct module for collecting 'maybe PR comments in maybe repos'
