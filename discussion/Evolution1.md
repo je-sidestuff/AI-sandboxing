@@ -229,3 +229,13 @@ The lifecycle of a repository writespace is as follows:
 
 Please also create a dedicated ridealong document to execute this process. Use this repo as the target and clod as the agent. (See federation-command for details on how to create a good ridealong)
 ```
+
+**Note - the AI-sandboxing project was moved to the 'research' section and deleted from 'sandbox' here.**
+
+### Step 9 - Bring claudomation into the project and create the initial execution interaction with branch isolation flow
+
+```prompt
+
+Now that we have slopspaces working in 'dungeon-keeper' in place we want to add minimal support for branch-isolation flows. We will update 'research/AI-evo1/heuristic-agent' with this functionality.
+
+```
