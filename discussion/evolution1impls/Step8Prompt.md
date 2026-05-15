@@ -42,9 +42,7 @@ The lifecycle of a repository writespace is as follows:
 Please also create a dedicated ridealong document to execute this process. Use this repo as the target and clod as the agent. (See federation-command for details on how to create a good ridealong)
 
 
-
 # Reply
-
 
 I have completed the implementation. Here's a summary of what was done:
 
