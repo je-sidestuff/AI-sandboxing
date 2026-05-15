@@ -276,6 +276,21 @@ When this work is complete I should be able to execute the new 'research/AI-evo1
 
 ```
 
+## Brainstorm execution approval
+
+Flow is:
+- Execution happens with no intervention (signal to execute implicitly includes approval)
+- When execution finishes slopspace is returned automatically
+- What should we wait on an approval signal for and what not?
+  - We probably want to auto-push to branches (sometimes or always?)
+  - We probably don't want to merge or reintegrate without approval (ever? what about sequence-to-new-repo?)
+- We want approval signals to come from filesystem OR other interaction surfaces like github
+- Let's start with the assumption that a push to the branch isn't a write
+  - (How do merges and revise comments mesh with the language of read/write-spaces?)
+    - write-spaces must be able to 'conclude', and we must be able to 'handleConclusion'
+- We want to be able to auto-approved ('drinking bird')
+- We probably want to be able to approve some writes but not others
+
 
 ### Step 10 - Add the 'condocs' feature to federation command
 
