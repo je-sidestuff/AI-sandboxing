@@ -6,7 +6,7 @@ This file is a conversation about
 
 ```prompt
 
-We want slopspaces to now support a concept of 'proposing'. We want to have each slopspace have a 'proposal mode' -- no new arguments are required, and if the optional 'proposal mode' argument is not provided then this mode will default to 'auto-propose'.e'. 
+We want slopspaces to now support a concept of 'proposing'. We want to have each slopspace have a 'proposal mode' -- no new arguments are required, and if the optional 'proposal mode' argument is not provided then this mode will default to 'auto-propose'.
 
 The proposal mode of a slopspace is inherited by all writespaces in that slopspace. (In the future we may have individual proposal modes but for now we'll stick with the single slopspace level)
 
@@ -16,5 +16,15 @@ Respond first with a proposed implementation with all gaps filled in by assumpti
 
 Assume we want to support all existing content with only minor change to behaviour and that we will also create a new example for claudomation and new dist
 inct ridealongs for both dungeon-keeper and claudomation to explore this new functionality.
+
+```
+
+## Step 1 - Introduce the 'sync' concept
+
+```prompt
+
+We want slopspaces to now support a concept of 'syncing'. This is the process by which slopspaces 'expose their potential' to the outside world. In the case of a repo read or writespace this means pushing and pulling to/from the remote.
+
+We want to have each slopspace have a 'proposal mode' -- no new arguments are required, and if the optional 'proposal mode' argument is not provided then this mode will default to 'auto-propose'.
 
 ```
