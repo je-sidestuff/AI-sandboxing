@@ -309,3 +309,12 @@ When we use the handler to instruct the AI to begin a new step it automatically 
 The output of the AI is captured and placed in the discussion child doc after the heading '## Reply'.
 
 ```
+
+## Follow-on -- single repo tracking internal conduct
+
+- How does the flow work at a high level? Consider the external contributer driving.
+  - We must have the handler polling for changes, it must be in a half-duplex situation
+  - Does it make sense for it to always auto-consume/auto-propose? We probably only want auto-propose at least sometimes. We probably want both.
+  - We should exchange a control marker file - but the human should never have to manipulate metadata
+  - We must need to record git hashes as we advance the file, and we must want timestamps
+  - We must want to be able to roll back to previous commits but preserve what we did wrong (how?)
