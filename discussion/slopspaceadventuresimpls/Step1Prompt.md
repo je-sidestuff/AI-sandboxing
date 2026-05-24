@@ -1,177 +1,239 @@
 # Prompt
 
-We want slopspaces to now support a concept of 'proposing'. We want to have each slopspace have a 'proposal mode' -- no new arguments are required, and if the optional 'proposal mode' argument is not provided then this mode will default to 'auto-propose'.e'. 
+We want slopspaces (in AI-evo1) to now support a concept of 'syncing'. This is the process by which slopspaces 'expose their potential' to the outside world. In the case of a repo read or writespace this means pushing and pulling to/from the remote. In the case of a dtt read or writespace this means doing a read on any resources referenced (ones for a query or ones that are about to be written) and projecting what the changes would be to arrive at the outcome state. In each case the point is that the content is brought to a state where it is compared against the outside world so the outcome can be predicted in the case of acceptance (conceptually similar to a 'terraform plan').
 
-The proposal mode of a slopspace is inherited by all writespaces in that slopspace. (In the future we may have individual proposal modes but for now we'll stick with the single slopspace level)
+Syncing in slopspaces nomrally occurs at two points: immediately before a deploy occurs, and immediately after a return occurs. Slopspaces have a 'sync mode' -- no new arguments are required compared to our previous increment, and if the optional 'sync mode' argument is not provided then this mode will default to 'auto-sync'. In this case a sync occurs after the deploy is called before the deploy happens, and also after return is called, after the return occurs but before the overall return process ends.
 
-Each type of writespace proposes its changes differently. A writespace repo pushes its changes to its branch as part of the 'sync' phase which happens before proposing but after returning the slopspace. In order to propose the change it will use its 'interaction surface'. Different writespaces allow different interaction surfaces - the two types we will support in our initial implementation are the 'filesystem' and 'github PR'.
+The sync mode of a slopspace is inherited by all writespaces in that slopspace. (In the future we may have individual sync modes but for now we'll stick with the single slopspace level)
 
-Respond first with a proposed implementation with all gaps filled in by assumptions (which are stated), and then respond with a series of clarifying questions so we can refine this implementation.
+In the future slopspaces will sync in order to make themselves ready to propose their changes. In order to propose the change they will use their 'interaction surface'. Different writespaces allow different interaction surfaces - the two types we will support in our initial implementation are the 'filesystem' and 'github PR'. We will worry about these implementations later - they will be outside the view of dungeon-keeper but will be within the view of claudomation.
 
-Assume we want to support all existing content with only minor change to behaviour and that we will also create a new example for claudomation and new dist
-inct ridealongs for both dungeon-keeper and claudomation to explore this new functionality.
+For our initial increment we will implement only 'sync' functionality, with only the 'auto-sync' mode, and only for repo-type read and writespaces. We will plumb this functionality into dungeok-keeper, and it should come into claudomation for free and should not impose additional baggage.
 
+Respond first with a proposed implementation with all gaps filled in by assumptions (which are stated), and then respond with a series of clarifying questions so we can refine this implementation. 
+
+Assume we want to support all existing content with only minor change to behaviour and that we will also create a new example for claudomation and new distinct ridealongs for both dungeon-keeper and claudomation to explore this new functionality.
 
 ## Reply
 
-Now I have a thorough understanding of the codebase. Here's my full implementation proposal, followed by clarifying questions.
+Now I have a solid understanding of the codebase. Here is my proposed implementation followed by clarifying questions.
 
 ---
 
-## Implementation Proposal: Slopspace Proposal Mode
+## Proposed Implementation
 
-### Core Concepts
+### Assumptions
 
-**Proposal modes** (stored on the slopspace, inherited by all its writespaces):
-- `auto-propose` (default): `slopspace write` automatically triggers `propose` after sync
-- `manual`: `propose` must be called explicitly
-- `none`: no proposal step ever runs
+1. **Pre-deploy sync (pull)**: Freshens both readspace and writespace repos from remote before the agent runs — readspaces get re-pulled from their canonical clones, writespaces get `git pull --rebase` against origin.
+2. **Post-return sync (push)**: After the agent returns, all writespace repo changes are committed and pushed to their respective remote branches (equivalent to calling `WriteAllRepoChanges` automatically).
+3. **Sync errors are fatal**: If sync fails, the deploy/return call fails and returns an error. This prevents agents running on stale data or changes being silently lost.
+4. **Backward compatibility**: Existing slopspaces whose `SLOPSPACE.json` lacks a `SyncMode` field will default to `auto-sync` at read time (Go zero-value → treated as auto-sync).
+5. **No new manual sync CLI subcommand** in this increment — sync is an internal concern of Deploy/Return.
+6. **DTT sync is a no-op** in this increment (placeholder path, no implementation).
+7. **Auto-generated commit message** for post-return pushes: `"slopspace auto-sync: iteration {N}"` using the existing iteration counter.
+8. **Claudomation gets sync for free**: `execute.py` calls `dungeon-keeper slopspace deploy`; the watch loop calls `Return` — both will auto-sync without changes to claudomation. No new terraform variables needed.
+9. **Sync mode is stored in `SLOPSPACE.json`** so it persists across iterations.
+10. **No change to the readspace canonical clone refresh** on pre-deploy — the sync only updates the slopspace copy from the already-cloned canonical; it does not re-pull from GitHub into the canonical (that remains a separate operation). If canonical is stale, it's stale.
 
-**Interaction surfaces** (derived from writespace type, not configurable per-writespace):
-- Repo writespaces → `github-pr`
-- All other writespace types (files, dtt-canvas, agent-records) → `filesystem`
-
----
-
-### Assumption A: "Filesystem" proposals write a manifest file
-
-For non-repo writespaces, the proposal writes a `proposals/<type>/<id>.json` into the slopspace root:
-
-```json
-{
-  "created_at": "...",
-  "writespace_type": "files",
-  "slopspace_id": "...",
-  "status": "pending"
-}
-```
-
-This gives an external signal that changes exist and are ready for review — useful for dtt-canvas outputs or file trees that an external process might pick up.
+> Assumption 10 is the trickiest. See clarifying question #1.
 
 ---
 
-### Assumption B: Proposal metadata is tracked per-writespace in the slopspace
+### Changes Required
 
-A new `WRITESPACE_REPOS.json` (or equivalent section in `SLOPSPACE.json`) tracks:
+#### 1. `dungeon-keeper/pkg/types/types.go`
 
-```json
-{
-  "repos": [
-    {
-      "owner": "org",
-      "repo": "my-repo",
-      "branch": "slopspace-abc123-feature",
-      "proposed_at": null,
-      "proposal_url": null
-    }
-  ]
-}
-```
-
-This lets `propose` find the branch name without needing a live `.git` directory.
-
----
-
-### Assumption C: GitHub PR creation uses the REST API with the existing PAT
-
-New `propose.go` in `dungeon-keeper/pkg/slopspace/` calls `https://api.github.com/repos/<owner>/<repo>/pulls` using `TF_VAR_github_pat`. Default PR title = the commit message from the sync phase. Default PR body includes the slopspace ID, agent type, model, and the original prompt from the work signal (if available).
-
-PR creation is idempotent: if a PR already exists for the branch, the command returns the existing URL without error.
-
----
-
-### Assumption D: Auto-propose wires into `slopspace write`, not a separate orchestration call
-
-When `slopspace write repo <id> <owner/repo>` completes a sync and the slopspace's proposal mode is `auto-propose`, it immediately runs the proposal step. Scripts calling `write` get the full behavior without changes. The `propose` command remains callable independently for `manual` mode.
-
----
-
-### Schema changes (`types.go`)
+Add `SyncMode` type and constant, add field to `SlopspaceMetadata`:
 
 ```go
-type ProposalMode string
+type SyncMode string
 
 const (
-    ProposalModeAutoPropose ProposalMode = "auto-propose"
-    ProposalModeManual      ProposalMode = "manual"
-    ProposalModeNone        ProposalMode = "none"
+    SyncModeAutoSync SyncMode = "auto-sync"
+    // Future: SyncModeManual, SyncModeNone
 )
 
-// SlopspaceMetadata gets one new field:
 type SlopspaceMetadata struct {
-    // ...existing fields...
-    ProposalMode ProposalMode `json:"proposal_mode"`
+    Slopspace
+    WorkSignalPath    string
+    Iteration         int
+    DeployedAgentType AgentType
+    SyncMode          SyncMode  // defaults to auto-sync when empty
 }
 ```
 
-`ProposalMode` zero-value is empty string; reading metadata treats `""` as `auto-propose` for backwards compatibility with existing slopspaces.
+`SyncMode` field with empty string → treated as `SyncModeAutoSync` throughout. No migration of existing files needed.
 
 ---
 
-### CLI changes (`main.go`)
+#### 2. `dungeon-keeper/pkg/slopspace/slopspace.go`
 
+Add two internal functions and wire them into `Deploy` and `Return`:
+
+```go
+// syncPreDeploy runs before deploy: pulls fresh content into readspaces
+// and writespaces from their remotes.
+func syncPreDeploy(id string) error {
+    meta, err := ReadMetadata(id)
+    if err != nil { return err }
+    if meta.SyncMode != SyncModeAutoSync && meta.SyncMode != "" {
+        return nil
+    }
+    // Pull each readspace repo:
+    //   - git pull --rebase on canonical at /host-agent-files/readspaces/repos/<owner>/<repo>
+    //   - re-copy content (sans .git) into slopspace readspaces path (overwrite)
+    // Pull each writespace repo:
+    //   - restore .git from writespaces-secure/<owner>/<repo>
+    //   - git pull --rebase origin <branch>
+    //   - move .git back to writespaces-secure
+    return nil
+}
+
+// syncPostReturn runs after return: commits and pushes writespace repo changes.
+func syncPostReturn(id string) error {
+    meta, err := ReadMetadata(id)
+    if err != nil { return err }
+    if meta.SyncMode != SyncModeAutoSync && meta.SyncMode != "" {
+        return nil
+    }
+    msg := fmt.Sprintf("slopspace auto-sync: iteration %d", meta.Iteration)
+    return WriteAllRepoChanges(id, msg)
+}
 ```
-dungeon-keeper slopspace create [--proposal-mode <mode>]
 
-dungeon-keeper slopspace propose <id>                          # all writespaces
-dungeon-keeper slopspace propose repo <id> <owner/repo>        # specific repo
-    [--pr-title <title>]   # defaults to commit message
-    [--pr-body  <body>]    # defaults to generated template
+`Deploy` change — insert before the move:
+
+```go
+func Deploy(id string, agentType AgentType) error {
+    // ... existing validation ...
+    if err := syncPreDeploy(id); err != nil {
+        return fmt.Errorf("pre-deploy sync: %w", err)
+    }
+    // ... existing deploy logic (move readspaces/writespaces) ...
+}
 ```
 
-`slopspace write` behavior is unchanged in interface; the auto-propose trigger is internal.
+`Return` change — insert before return exits:
+
+```go
+func Return(id string) error {
+    // ... existing return logic (move writespaces back, discard readspaces) ...
+    if err := syncPostReturn(id); err != nil {
+        return fmt.Errorf("post-return sync: %w", err)
+    }
+    return nil
+}
+```
 
 ---
 
-### Full lifecycle with proposal
+#### 3. `dungeon-keeper/main.go`
+
+Add optional `--sync-mode` flag to `slopspace create`:
 
 ```
-1. create slopspace  [--proposal-mode auto-propose]
-2. add-writespace repo ... --ref slopspace-<id>-<feature>
-3. deploy
-4. agent works
-5. return          ← slopspace returned, .git restored
-6. write all       ← sync: git add -A, commit, push branch to remote
-                      if auto-propose: automatically runs step 7
-7. propose         ← github-pr: POST /repos/.../pulls
-                      filesystem: write proposals/<type>/<id>.json
+dungeon-keeper slopspace create [--sync-mode auto-sync]
 ```
+
+Pass it through to `slopspace.Create()`. All existing callers omit it and get `auto-sync`.
 
 ---
 
-### New files
+#### 4. New: `dungeon-keeper/docs/sync-ridealong.md`
 
-| File | Purpose |
-|---|---|
-| `dungeon-keeper/pkg/slopspace/propose.go` | `ProposeRepoChanges()`, `ProposeFilesystem()`, `ProposeAll()`, GitHub API helper |
-| `dungeon-keeper/docs/proposal-ridealong.md` | dungeon-keeper ridealong: manual proposal flow |
-| `claudomation/examples/proposal/main.tf` | Terraform example using auto-propose |
-| `claudomation/examples/proposal/ridealong.md` | Claudomation ridealong: auto-propose creating a PR |
+Ridealong demonstrating:
+1. Clone a repo into readspaces and writespaces
+2. Create a slopspace (default auto-sync)
+3. Deploy → watch pre-deploy sync (pull) log output
+4. Agent (clod) makes a change to the writespace
+5. Return → watch post-return sync commit + push log output
+6. Verify the branch on the remote has the new commit
 
 ---
 
-### Backwards compatibility
+#### 5. New: `claudomation/examples/sync/`
 
-- Existing slopspaces with no `proposal_mode` field are treated as `auto-propose`
-- `write` commands already in scripts get auto-propose behavior for free
-- No changes to `deploy`, `return`, or readspace commands
+Mirrors the structure of `claudomation/examples/execution/` with:
+- `main.tf` — references execution module
+- `ridealong.md` — same lifecycle as above but driven through terraform/claudomation
+- `README.md`
+
+No changes to `claudomation/modules/execution/` or `execute.py` — sync is transparent.
 
 ---
 
 ## Clarifying Questions
 
-1. **What are the other proposal modes besides `auto-propose`?** I assumed `manual` and `none` — is that right, or are there others (e.g. `dry-run`, `draft-pr`)?
+**1. Pre-deploy readspace sync depth** — Assumption 10 above says we only re-copy from the already-cloned canonical; we do *not* `git pull` the canonical from GitHub. Is that right, or should pre-deploy sync also pull the canonical from remote so the agent always gets the freshest data? (The latter is closer to the terraform-plan analogy but makes sync slower and network-dependent.)
 
-2. **Should the GitHub PR be created as a draft PR?** A draft PR is less disruptive for automated changes, but it requires explicit review to mark ready. Which should be the default?
+**2. Pre-deploy writespace sync direction** — I assumed pre-deploy *pulls* writespaces (fetch latest from remote). But should pre-deploy also *push* the current writespace state to a preview/shadow branch on origin? That would "expose potential" in the sense that someone could inspect the remote branch to see what the slopspace currently contains *before* the agent runs.
 
-3. **Where does the PR title/body come from in the automated path?** My assumption: the commit message from the sync phase becomes the PR title, and the work signal prompt becomes the body. Is there a better source, or should these be set explicitly per-execution?
+**3. Sync failure policy** — I assumed fatal (deploy/return returns error). Should sync failures instead be logged as warnings and allow the operation to continue? The case for non-fatal: network flakiness shouldn't block an agent from running.
 
-4. **Should existing `slopspace write` scripts pick up auto-propose automatically** (my current assumption), or should the proposal step only run when `propose` is called explicitly, even in `auto-propose` mode? The distinction matters for scripts that currently call `write` and whose callers don't expect a PR to appear.
+**4. Post-return sync when writespace has no changes** — `WriteRepoChanges` already checks for changes and skips commit if tree is clean. Should it also skip the push, or push anyway (to set upstream tracking)? Current assumption: skip both commit and push if no changes.
 
-5. **For the claudomation example**: should it use a real repo (like the existing `AI-evo1` examples do), or a dummy/placeholder repo that readers substitute in?
+**5. Commit message for auto-sync** — Is `"slopspace auto-sync: iteration N"` acceptable, or should we pull context from the work signal prompt? Work signal prompt is available in the dungeon-keeper watch loop but not inside `slopspace.Return()` without threading it through.
 
-6. **Filesystem proposal format**: I assumed a JSON manifest file in the slopspace. Is there a specific format or location that makes more sense for how non-repo writespace outputs are currently consumed?
+**6. SyncMode on `slopspace create` vs. at call sites** — Should `dungeon-keeper slopspace deploy` also accept `--sync-mode` (to override per-deploy)? Or is it strictly set once at create time and stored in metadata for all iterations?
 
-7. **Should `propose` record its output (PR URL, etc.) back into the slopspace metadata**, or into the ledger only? I assumed both — the slopspace tracks `proposal_url` per writespace repo, and the ledger gets an event.
+**7. Ridealong target repo** — Both existing ridealongs target the `AI-evo1` repo itself. Should the new sync ridealongs do the same (simplest), or target a dedicated toy/demo repo to avoid polluting AI-evo1's branch list?
 
-8. **Interaction surface configurability**: I assumed the surface is fixed per writespace type (repos always use `github-pr`). Should it be overridable at the slopspace or writespace level (e.g. a repo writespace that proposes via filesystem for testing)?
+**8. Claudomation example structure** — The sync example will be functionally identical to the execution example except it will produce an observable git push. Should it use a different prompt that makes the repo change visible (e.g., clod appends a line to a file), or is it fine to use the same generic prompt and just observe the sync side-effect in logs?
+
+
+## Reprompt A
+
+Question answers:
+
+1 - We DO want to re-pull from the canonical. This probably means we will need to have a readspace-secure paradigm.
+
+2 - The pull is fine, stick with the assumption.
+
+3 - Good assumption, we'll start with that for this iteration.
+
+4 - Skip both if we made no changes, but 'pull --rebase' before the push if we can do so cleanly with no conflicts.
+
+5 - This is a good starting point.
+
+6 - Keep it to on-create for now.
+
+7 - Point to AI-evo1 for now, but we will clean this up soon.
+
+8 - Make it so clod creates or modifies a file (remember the special instruction syntax) so we can see the difference.
+
+Let's implement this understanding! Make the changes in AI-evo1.
+
+
+## Reply
+
+All done. Here's a summary of every change made:
+
+---
+
+## Changes made
+
+### `dungeon-keeper/pkg/types/types.go`
+- Added `SyncMode` type (`"auto-sync"`) and `SyncModeAutoSync` constant
+- Added `SyncMode SyncMode \`json:"sync_mode,omitempty"\`` field to `SlopspaceMetadata`; empty value treated as auto-sync everywhere, so existing `SLOPSPACE.json` files need no migration
+
+### `dungeon-keeper/pkg/slopspace/slopspace.go`
+- Added `ReadSpacesSecure = "readspaces-secure"` constant (mirrors `WriteSpacesSecure`)
+- **`Create(syncMode)`** — new parameter; stores sync mode in metadata
+- **`AddReadspaceRepo`** — changed from deleting `.git` to moving it into `readspaces-secure/repos/<owner>/<repo>`, so pre-deploy sync can pull from remote
+- **`Deploy`** — calls `syncPreDeploy(rootPath, syncMode)` before moving dirs; pulls latest into all readspace and writespace repos
+- **`Return`** — calls `syncPostReturn(id, syncMode, iteration)` after writing metadata; commits and pushes all writespace repo changes
+- **`WriteRepoChanges`** — added `git pull --rebase` between commit and push (per Q4 answer: pull cleanly before pushing when changes exist)
+- New helpers: `isAutoSync`, `syncPreDeploy`, `syncPostReturn`, `syncRepoDir`, `pullWithSecureGit`, `gitPullRebase`
+
+### `dungeon-keeper/main.go`
+- `slopspace create` now accepts optional `--sync-mode auto-sync` flag; displays sync mode in output
+- Worker's internal `Create()` call updated to pass `types.SyncModeAutoSync`
+- Usage text updated to document the flag and auto-sync behaviour
+
+### `dungeon-keeper/docs/sync-ridealong.md` _(new)_
+Ridealong demonstrating the full sync lifecycle: clone → create slopspace → deploy (pre-deploy sync logged) → agent creates file → Return (post-return sync pushes commit) → verify branch on remote with no manual `slopspace write`
+
+### `claudomation/examples/sync/` _(new)_
+- `main.tf` / `variables.tf` / `providers.tf` / `outputs.tf` — same structure as the execution example; default prompt has the agent create a file in the writespace repo so the sync push is observable
+- `ridealong.md` — walks through repo setup outside terraform, then `terraform apply`, then verifying the auto-pushed commit on the remote branch
+- `README.md` — module documentation
