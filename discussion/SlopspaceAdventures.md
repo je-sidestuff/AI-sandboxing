@@ -80,6 +80,17 @@ We will assume that the knowledge of these interactions is distributed as follow
 - agent-dispatch has awareness over the high level structures of assignments, phases, and steps, and has the ability to observe signals that indicate it is time to trigger claudomation and have assignments progress. It does not reach into assignments and modify them directly, it always behaves as an orchestrator.
 
 Let's start by crating a plan for an incremental implementation which covers:
+- The minimum amount of content necessary to create a 'step' object in a new 'assignment' claudomation module and example
+  - The assignment should not be integrated with execution YET - we'll put a fake stub in place instead of the execution for now
+  - We won't model retry or revise yet
+  - We WILL create the initial ledger implementation
+  - We WILL create and read our interaction surface (with a sloppo PR first)
+
+Be as minimalist as possible........
+
+--- take 1 ---
+
+Let's start by crating a plan for an incremental implementation which covers:
 - Upgrades to dungeon-keeper and claudomation as-needed to accomplish scenario (1.)
   - Modeling of the assignment, phase, and step data structures
   - Modeling of the revise and retry processes
@@ -106,10 +117,18 @@ What do we need to make an assignment work?
 - It needs to know when an execution has been finished (keep this in synchronous blocks locked by state)
   - Needs to know when an execution worked (is this just in the success or failure of the resource, or is the completion of an attempt always success? probably latter)
   - Needs to re-execute at the right time when executions fail
-- Needs to put its state into a ledger so it can be viewed/state-retrieved
+- Needs to put its state into a ledger so it can be viewed/state-retrieved (How does the ledger work?)
+  - Records IDs and timestamps in a latching way for work completed
+  - Idempotent
+  - Contains metadata, no work output
+  - (Do we need timeouts?)
+  - (Do we want to state start and completion times?)
+  - We want to reflect everything needed for importing an ongoing assignment in the ledger
+  - (Will we use a file and/or github file resource?)
 - Needs to see input from the interaction surface
   - (Do we reflect on other interaction surfaces? Assume yes, like read-replicas)
 - Needs to know when approved
+- Needs to know when rejected
 
 - Don't need revise/retry but when we do...
   - We need to keep track of when something has been 'tried' (unambiguously) so that it can be 'retried'/'revised'
