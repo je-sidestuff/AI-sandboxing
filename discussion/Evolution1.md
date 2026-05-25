@@ -306,7 +306,19 @@ Each 'step' heading optionally contains comments and must contain triple-backtic
 
 When we use the handler to instruct the AI to begin a new step it automatically creates a child discussion document and metadata document, populates the header metadata and the parent link back, copies the prompt into the child discussion under the heading '## Prompt', and instructs the AI to execute the prompt.
 
-The output of the AI is captured and placed in the discussion child doc after the heading '## Reply'.
+The output of the AI is captured and placed in the discussion child doc after the heading '## Reply' (or '## Reply X').
+
+In order to tell the agent that the condoc is in a state where it is time for it to act we can add the line !HANDOFF! to the end of the document. (As long as only whitespace is following the '!HANDOFF!' string the handler wiull recognize this.) When the agent picks up the handoff it will replace the '!HANDOFF!' string with <>
+
+We want to implement condocs in AI-evo1/federation-command in a very decoupled and non-invasive way. This implementation is an early iteration and we want to be able to cleanly remove everything without being disruptive if we want to try again.
+
+For our condocs implementation we will look at the 'AI-sandboxing/discussion/Evolution1.md'/'AI-sandboxing/discussion/evolution1impls' and 'AI-sandboxing/discussion/SlopspaceAdventures.md'/'AI-sandboxing/discussion/slopspaceadventuresimpls' for inspiration. These capture the idea of the interaction but are not character-for-character examples. Also look at 'AI-sandboxing/discussion/condocs-examples' for character-for-character examples -- beginning with 'AI-sandboxing/discussion/condocs-examples/simple'. (Note that explanation.md is not part of an interaction - it is there to explain what is happening)
+
+Note that initially we WILL NOT IMPLEMENT THE RETRY PATH, ONLY THE REVISE.
+
+We can look at our ridealong handler dynapane for inspiration on federation-command UI design. When our UI is in 'condoc' mode it has a similar appearance to the ridealong handler but the flashing dot is green and yellow instead of blue and red, and the emoji is not a cop-car. They are both examples of dynapanes.
+
+We will now implement enough of the condoc handler in 'AI-evo1/federation-command' to perform the steps we see in 'AI-sandboxing/discussion/condocs-examples/simple'.
 
 ```
 
@@ -314,7 +326,7 @@ The output of the AI is captured and placed in the discussion child doc after th
 
 - How does the flow work at a high level? Consider the external contributer driving.
   - We must have the handler polling for changes, it must be in a half-duplex situation
-  - Does it make sense for it to always auto-consume/auto-propose? We probably only want auto-propose at least sometimes. We probably want both.
+  - Does it make sense for it to always auto-consume/auto-propose? We probably only want auto-propose sometimes. We probably want both.
   - We should exchange a control marker file - but the human should never have to manipulate metadata
   - We must need to record git hashes as we advance the file, and we must want timestamps
   - We must want to be able to roll back to previous commits but preserve what we did wrong (how?)
