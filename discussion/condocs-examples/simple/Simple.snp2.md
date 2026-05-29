@@ -12,11 +12,13 @@ condoc:
 
 A simple conversational document where we create great content about cats.
 
+
 ### Step 1 - <REPLACE-TITLE>
 
 ```prompt
 <REPLACE-PROMPT>
 ```
+
 
 ## Human-Prompt
 

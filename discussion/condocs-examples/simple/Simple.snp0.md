@@ -12,6 +12,7 @@ condoc:
 
 A simple conversational document where we create great content about cats.
 
+
 ## Human-Prompt
 
 This is the proposed document structure and condoc setup foir our new condoc.
