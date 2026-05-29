@@ -18,21 +18,12 @@ A simple conversational document where we create great content about cats.
 We'll tell the AI to write a little story here...
 
 ```prompt
-Create a short story about cats in the file 'AI-sandboxing/discussion/condocs-examples/simple/CatStory.md'.
+Create a short story about cats in the file 'AI-sandboxing/discussion/condocs-examples/verbose/CatStory.md'.
 ```
 
 these notes won't be transposed into our step document.
 
 
-### Step 2 - <REPLACE-TITLE>
+## Condoc Completed
 
-```prompt
-<REPLACE-PROMPT>
-```
-
-
-## Human-Prompt
-
-Add the Title and Prompt then submit the '!HANDOFF!' directive to execute the second step, or submit the '!COMPLETED!' directive to complete this condoc.
-
-!COMPLETED!
+This condoc was completed at 1779744015 (Mon May 25 09:20:15 PM UTC 2026).

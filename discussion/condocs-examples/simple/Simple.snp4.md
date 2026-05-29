@@ -27,5 +27,3 @@ these notes won't be transposed into our step document.
 ## Human-Prompt
 
 The flow of the condoc is now within the first step.
-
-Please respond to the Human-Prompt in the first step and add the '!HANDOFF!' directive there, of the '!COMPLETED!' directive when the step is complete.

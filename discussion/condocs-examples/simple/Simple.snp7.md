@@ -33,12 +33,4 @@ these notes won't be transposed into our step document.
 
 ## Human-Prompt
 
-The first step has bee ncompleted and we have templated our second step.
-
-Note that everything after the 'Human-Prompt' header will be removed for our next interaction.
-
-The second step has been templated. Please replace the title and the prompt with the desired input for our AI.
-
-When you are done add the '!HANDOFF!' directive to the end of the file followed by only whitespace, and the handler will instruct the AI to execute the first step.
-
-Alternatively, add the '!COMPLETED!' directive to the end of the file to consider this condoc a success and conclude it.
+Add the Title and Prompt then submit the '!HANDOFF!' directive to execute the second step, or submit the '!COMPLETED!' directive to complete this condoc.
