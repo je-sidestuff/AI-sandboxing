@@ -294,7 +294,7 @@ Flow is:
 
 ### Step 10 - Add the 'condocs' feature to federation command
 
-```
+```prompt
 
 We are creating a new capability for continuity in interactive AI collaboration called 'condocs', or 'conversational documents'.
 
@@ -330,3 +330,19 @@ We will now implement enough of the condoc handler in 'AI-evo1/federation-comman
   - We should exchange a control marker file - but the human should never have to manipulate metadata
   - We must need to record git hashes as we advance the file, and we must want timestamps
   - We must want to be able to roll back to previous commits but preserve what we did wrong (how?)
+
+
+### Step 11 - Add the 'retry' path to federation command
+
+```prompt
+
+Now that we have the first path for condocs working in federation command (in AI-evo1) we need to add the rest of the feature.
+
+The next item we will implement is the 'retry' path.
+
+The revision path works as follows:
+- We state we want a retry instead of a revision when we are iterating on a step
+- We optionally state (from X), where X may be 'start' or one of the letters (A-N) -- ie: '## Retry C (from A)'
+  - If (from X) is not specified then the previous step is implied (start if current increment is A, A if current increment is B, etc)
+
+```
