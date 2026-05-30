@@ -1,5 +1,7 @@
 # Prompt
 
+[Simple](../Simple.md)
+
 Create a short story about cats in the file 'AI-sandboxing/discussion/condocs-examples/simple/CatStory.md'.
 
 

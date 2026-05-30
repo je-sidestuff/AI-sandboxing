@@ -15,6 +15,8 @@ A simple conversational document where we create great content about cats.
 
 ### Step 1 - Quick Nice Little Cat Story
 
+[Step 1 Prompt](simpleImpls/Step1Prompt.md)
+
 We'll tell the AI to write a little story here...
 
 ```prompt

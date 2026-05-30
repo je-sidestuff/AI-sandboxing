@@ -15,6 +15,6 @@ A simple conversational document where we create great content about cats.
 
 ## Human-Prompt
 
-To accept this condoc proposal add the '!HANDOFF!'.
+To accept this condoc proposal add the '!HANDOFF!' directive.
 
 '!HANDOFF!'
