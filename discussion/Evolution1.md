@@ -341,8 +341,22 @@ Now that we have the first path for condocs working in federation command (in AI
 The next item we will implement is the 'retry' path.
 
 The revision path works as follows:
-- We state we want a retry instead of a revision when we are iterating on a step
+- We state we want a 'Retry' instead of a 'Revision' when we are iterating on a step
 - We optionally state (from X), where X may be 'start' or one of the letters (A-N) -- ie: '## Retry C (from A)'
   - If (from X) is not specified then the previous step is implied (start if current increment is A, A if current increment is B, etc)
+- When we retry the sequence is as follows:
+  - We push the current state of the branch to a new branch - condoc/<current-identifier>/takeN instead of condoc/<current-identifier>/main (where N is a counter for the full scope of the condoc, not per step, starting at 1)
+  - We use 'git log -p -n <steps-back>' and save the output to a file takeN<identifier>diff.txt beside our step file
+  - We move the head of our condoc/<current-identifier>/main branch back to the commit we are retrying from
+  - We follow the retry prompt the same way we would have for a revision
+
+Note that to facilitate the smooth operation of this mechanism, and to create better traceability generally, we will want to also:
+- Add the commit we are currently on BEFORE a '## Reply' line along with a link to the commit
+  - For now assume we're using github, we'll generalize later
+  - Use a similar style to the step/parent links and similar spacing
+
+Note that a 'Retry' may only retry back as far as the beginning of a step, and that a retry only has meaning within the scope of a step, never at the scope of the outer condoc. (Similar to Revision)
+
+We will first create an example 'AI-sandboxing/discussion/condocs-examples/retry' using 'AI-sandboxing/discussion/condocs-examples/verbose' as a base. In the example we will do a 'Retry' AFTER our first revision and in this case retry from 'start'.
 
 ```

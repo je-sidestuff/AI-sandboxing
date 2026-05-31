@@ -1,0 +1,68 @@
+commit 9b4c8e1f2d3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c
+Author: Example User <user@example.com>
+Date:   Mon May 25 21:15:42 2026 +0000
+
+    condoc: step 1 agent output
+
+diff --git a/AI-sandboxing/discussion/condocs-examples/retry/CatStory.md b/AI-sandboxing/discussion/condocs-examples/retry/CatStory.md
+index 4a7b1c2..8d3e9f1 100644
+--- a/AI-sandboxing/discussion/condocs-examples/retry/CatStory.md
++++ b/AI-sandboxing/discussion/condocs-examples/retry/CatStory.md
+@@ -1,3 +1,3 @@
+ # Our Wonderful cat Story
+
+-The ginger tabby sat perfectly still, watching a moth dance against the windowpane. With a sudden, silent wiggle of his hips, he pounced—only to land gracefully on the rug as the moth flickered away. He blinked, groomed his paw with dignified indifference, and promptly went back to sleep.
++Barnaby, the ginger tabby, sat perfectly still, watching a moth dance against the windowpane. With a sudden, silent wiggle of his hips, he pounced—only to land gracefully on the rug as the moth flickered away. He blinked, groomed his paw with dignified indifference, and promptly went back to sleep.
+diff --git a/AI-sandboxing/discussion/condocs-examples/retry/simpleImpls/Step1Prompt.md b/AI-sandboxing/discussion/condocs-examples/retry/simpleImpls/Step1Prompt.md
+index 2c1a4f7..b8e3d92 100644
+--- a/AI-sandboxing/discussion/condocs-examples/retry/simpleImpls/Step1Prompt.md
++++ b/AI-sandboxing/discussion/condocs-examples/retry/simpleImpls/Step1Prompt.md
+@@ -12,3 +12,15 @@
+ I have created a wonderful story for you in the file 'CatStory.md' in the directory above this one.
+
+ I chose the theme of a pompous cat attacking an unsuspecting creature.
++
++
++## Revision A
++
++Don't make the story much longer (if at all) - but PLEASE give the cat a name. Cats need names.
++
++
++[`7f2a9e3`](https://github.com/example-user/research/commit/7f2a9e3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f)
++
++## Reply A
++
++I have made this story less anonymous.
++
++Cats deserve names - even violent or malevolent ones.
+
+commit 7f2a9e3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f
+Author: Example User <user@example.com>
+Date:   Mon May 25 21:09:18 2026 +0000
+
+    condoc: step 1 agent output
+
+diff --git a/AI-sandboxing/discussion/condocs-examples/retry/CatStory.md b/AI-sandboxing/discussion/condocs-examples/retry/CatStory.md
+new file mode 100644
+index 0000000..4a7b1c2
+--- /dev/null
++++ b/AI-sandboxing/discussion/condocs-examples/retry/CatStory.md
+@@ -0,0 +1,3 @@
++# Our Wonderful cat Story
++
++The ginger tabby sat perfectly still, watching a moth dance against the windowpane. With a sudden, silent wiggle of his hips, he pounced—only to land gracefully on the rug as the moth flickered away. He blinked, groomed his paw with dignified indifference, and promptly went back to sleep.
+diff --git a/AI-sandboxing/discussion/condocs-examples/retry/simpleImpls/Step1Prompt.md b/AI-sandboxing/discussion/condocs-examples/retry/simpleImpls/Step1Prompt.md
+index e5f4a3b..2c1a4f7 100644
+--- a/AI-sandboxing/discussion/condocs-examples/retry/simpleImpls/Step1Prompt.md
++++ b/AI-sandboxing/discussion/condocs-examples/retry/simpleImpls/Step1Prompt.md
+@@ -5,3 +5,10 @@
+ Create a short story about cats in the file 'AI-sandboxing/discussion/condocs-examples/retry/CatStory.md'.
+
+
++[`3f7a1c2`](https://github.com/example-user/research/commit/3f7a1c2d4e5b6a7c8d9e0f1a2b3c4d5e6f7a8b9c)
++
++## Reply
++
++I have created a wonderful story for you in the file 'CatStory.md' in the directory above this one.
++
++I chose the theme of a pompous cat attacking an unsuspecting creature.
