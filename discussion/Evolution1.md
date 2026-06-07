@@ -360,3 +360,19 @@ Note that a 'Retry' may only retry back as far as the beginning of a step, and t
 We will first create an example 'AI-sandboxing/discussion/condocs-examples/retry' using 'AI-sandboxing/discussion/condocs-examples/verbose' as a base. In the example we will do a 'Retry' AFTER our first revision and in this case retry from 'start'.
 
 ```
+
+### Step 12 - Implement pick-up-where-you-left-off in condocs
+
+```prompt
+
+Now that we have condocs in a good working state in 'AI-evo1/federation-command' we will add the functionality to resume a condoc which was begun but not completed.
+
+If the user attempts to enter a condoc filename that already exists when entering that mode then the handler will check if that file is a valid condoc.
+
+If the file is a condoc the handler will then check if it is ongoing -- if it is completed it will complain and abort.
+
+If the condoc is valid and has not been completed then the handler will begin where the condoc was left off.
+
+If this is a straightforward implementation with few ambiguities then we will go forward with the implementation straightaway. If there are considerations that need to be ironed out first we will bring them to discussion.
+
+```
