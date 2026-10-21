@@ -12,3 +12,11 @@ Cats sleep around 12 to 16 hours a day, which is why they always seem rested and
 ## A small cat philosophy
 
 A cat does what it wants, when it wants, and still expects dinner on time.
+
+## Pictures
+
+![A cat face](images/cat-face.svg)
+
+![A cat sleeping under the moon](images/sleeping-cat.svg)
+
+![Cat vs. human sleep chart](images/sleep-chart.svg)
