@@ -21,3 +21,7 @@ Biscuit sat at the edge and watched over him until the sun began to sink. Then P
 Nobody ever found out how the tank got so empty, or why the cat was always a little bit wet.
 
 *The End*
+
+---
+
+*Afterword:* Pip, being a very organized axolotl, filed an issue about this very story: [Review axolotl-cat-rider.md story](https://github.com/je-sidestuff/AI-sandboxing/issues/37). Yes, the axolotl created it himself (with some help from a DTT document). Biscuit declined to comment.
